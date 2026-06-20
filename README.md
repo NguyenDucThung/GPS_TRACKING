@@ -1,7 +1,7 @@
 #ESP32 Smart Motorbike Security & Tracking System
 Hệ thống chống trộm, định vị và quản lý xe máy thông minh hiệu năng cao được phát triển trên vi điều khiển ESP32-C3 
 sử dụng framework ESP-IDF và hệ điều hành thời gian thực FreeRTOS. Dự án tích hợp các công nghệ định vị 4G/GPS, xác 
-thực BLE và cảm biến gia tốc để tối ưu hóa khả năng bảo mật toàn diện cho xe máy (như Vario) đồng thời đạt mức tiêu 
+thực BLE và cảm biến gia tốc để tối ưu hóa khả năng bảo mật toàn diện cho xe máy đồng thời đạt mức tiêu 
 thụ năng lượng siêu thấp.
 -------------------------------------------------------------------------------------------------------------------------
 #Các Tính Năng Cốt Lõi
