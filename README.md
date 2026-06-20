@@ -68,18 +68,6 @@ idf.py fullclean
 
 # Biên dịch dự án, nạp phần sụn và mở cổng giám sát log UART
 idf.py build flash monitor
-#Cấu Trúc Thư Mục Dự Án
-Plaintext
-├── components/            # Các driver ngoại vi độc lập được đóng gói (Modular Drivers)
-│   ├── mpu6050/           # Thư viện điều khiển cảm biến gia tốc & xóa cờ ngắt I2C
-│   ├── a7600e/            # Bộ phân tích lệnh AT, quản lý mạng 4G, GPS & Firebase
-│   ├── ble_driver/        # Cấu hình NimBLE phát quảng bá UUID bảo mật
-│   ├── buzzer/            # Driver điều khiển còi chip phát âm thanh báo động
-│   └── relay/             # Driver đóng cắt mạch Rơ-le hệ thống điện
-├── main/
-│   ├── CMakeLists.txt
-│   └── main.c             # Kiến trúc RTOS cốt lõi phân phối 5 Task hệ thống
-├── CMakeLists.txt
-└── README.md
+
 #License
 Được phát triển bởi Nguyen Duc Thuan with Gemini
