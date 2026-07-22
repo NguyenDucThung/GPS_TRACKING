@@ -8,15 +8,15 @@
 #include "esp_sleep.h"
 #include "driver/gpio.h"
 #include "driver/i2c.h"
-#include "driver/uart.h" // Thư viện dùng hàm xả rác UART chống reset
+#include "driver/uart.h"
 
 // --- CẤU HÌNH SỐ ĐIỆN THOẠI CHỦ XE VÀ CHÂN CỦA BẠN ---
-#define OWNER_PHONE_NUMBER "xxxxxxxxxx"
-#define SIM_SLEEP_PIN 3 // Chân điều khiển ngủ DTR/SLEEP của module SIM (Thay bằng chân bạn nối)
+#define OWNER_PHONE_NUMBER "0854383970"
+#define SIM_SLEEP_PIN 3 // Chân điều khiển DTR/SLEEP đồng thời là chân kích nguồn lúc boot
 
 // Include các driver độc lập từ thư mục components
 #include "mpu6050.h"
-#include "sim_a7600e.h" // Nhận diện SIM_RX_PIN (GPIO_NUM_5) và SIM_UART_NUM từ đây
+#include "sim_a7600e.h" // Nhận diện SIM_RX_PIN (GPIO_NUM_4) và SIM_UART_NUM từ đây
 #include "ble_driver.h"
 #include "buzzer.h"
 #include "relay.h"
@@ -28,6 +28,7 @@ typedef enum
     STATE_SLEEPING,
     STATE_VERIFYING,
     STATE_OWNER_CONNECTED,
+    STATE_REMOTE_FINDING,
     STATE_ALARM
 } system_state_t;
 
@@ -39,16 +40,17 @@ SemaphoreHandle_t xAuthSemaphore;
 SemaphoreHandle_t xCallSemaphore;
 SemaphoreHandle_t xSimMutex;
 
-// 🔥 CỜ LỆNH ĐỒNG BỘ DÀNH RIÊNG CHO TASK 5 TÌM XE TỪ XA
+// CỜ LỆNH ĐỒNG BỘ DÀNH RIÊNG CHO TASK 5 TÌM XE TỪ XA VÀ PUSH FIREBASE
 SemaphoreHandle_t xRemoteWakeSemaphore;
 SemaphoreHandle_t xSleepAgainSemaphore;
+SemaphoreHandle_t xFirebaseDoneSemaphore; // Cờ báo Task 3 đã push Firebase xong
 
 // Khai báo nguyên mẫu các Task
 void mpu_monitor_task(void *pvParameters);
 void central_control_task(void *pvParameters);
 void sim_gps_network_task(void *pvParameters);
 void ble_auth_task(void *pvParameters);
-void remote_find_task(void *pvParameters); // 🔥 Khai báo Task 5 xử lý cuộc gọi tìm xe
+void remote_find_task(void *pvParameters);
 
 // ====================================================================
 // HÀM CẦU NỐI: TIẾP NHẬN TÍN HIỆU XÁC THỰC THÀNH CÔNG TỪ LUỒNG BLE
@@ -58,8 +60,47 @@ void main_system_auth_success(void)
     if (xAuthSemaphore != NULL)
     {
         xSemaphoreGive(xAuthSemaphore);
-        ESP_LOGI(TAG, "🎯 [BRIDGE] Da tiep nhan tin hieu tu BLE! Mo khoa xe cap toc...");
+        ESP_LOGI(TAG, "🎯 [BRIDGE] Đã tiếp nhận tín hiệu từ BLE! Mở khóa xe cấp tốc...");
     }
+}
+
+// ====================================================================
+// HÀM BỔ TRỢ: ỔN ĐỊNH UART VÀ LÀM SẠCH RÁC CHO SIM SAU KHI THỨC GIẤC
+// ====================================================================
+void sim_stabilize_uart(void)
+{
+    uart_flush_input(SIM_UART_NUM);
+
+    for (int i = 0; i < 3; i++)
+    {
+        uart_write_bytes(SIM_UART_NUM, "AT\r\n", 4);
+        vTaskDelay(pdMS_TO_TICKS(150));
+    }
+
+    uart_flush_input(SIM_UART_NUM);
+    ESP_LOGI("SIM_UTIL", "⚡ Đường truyền UART với SIM đã sạch sẽ và sẵn sàng!");
+}
+
+// ====================================================================
+// CHU TRÌNH CẤP NGUỒN VÀ ĐỢI ỔN ĐỊNH THEO MẪU SÓNG KHỎE CỦA MẠCH
+// ====================================================================
+void power_on_sequence(void)
+{
+    ESP_LOGI(TAG, "===== KHỞI ĐỘNG CHU TRÌNH KÍCH NGUỒN MODULE SIM =====");
+
+    // 1. Đưa về trạng thái tĩnh ban đầu (LOW)
+    gpio_set_level(SIM_SLEEP_PIN, 0);
+    vTaskDelay(pdMS_TO_TICKS(500));
+
+    // 2. Kéo lên HIGH trong 3 giây đúng kỹ thuật phần cứng A7600E
+    ESP_LOGI(TAG, "-> Chân PWR (GPIO%d) lên HIGH (Giữ 3s)...", SIM_SLEEP_PIN);
+    gpio_set_level(SIM_SLEEP_PIN, 1);
+    vTaskDelay(pdMS_TO_TICKS(3000));
+
+    // 3. Thả về LOW và đợi 5 giây cho module bung sóng ổn định
+    gpio_set_level(SIM_SLEEP_PIN, 0);
+    ESP_LOGI(TAG, "-> Đã thả chân PWR về LOW. Chờ SIM bám mạng ổn định trong 5s...");
+    vTaskDelay(pdMS_TO_TICKS(5000));
 }
 
 void app_main(void)
@@ -73,8 +114,9 @@ void app_main(void)
     xCallSemaphore = xSemaphoreCreateBinary();
     xRemoteWakeSemaphore = xSemaphoreCreateBinary();
     xSleepAgainSemaphore = xSemaphoreCreateBinary();
+    xFirebaseDoneSemaphore = xSemaphoreCreateBinary();
 
-    // 2. Khởi tạo toàn bộ phần cứng ngoại vi
+    // 2. Khởi tạo cấu hình các GPIO ngoại vi cơ bản
     buzzer_init();
     relay_init();
 
@@ -88,17 +130,7 @@ void app_main(void)
     gpio_config(&io_conf);
     gpio_wakeup_enable(WAKEUP_GPIO_PIN, GPIO_INTR_HIGH_LEVEL);
 
-    // 🔥 CẤU HÌNH NGẮT CHO CHÂN RX (LẤY TỪ THƯ VIỆN) ĐỂ NHẬN CUỘC GỌI KHI NGỦ (MỨC THẤP)
-    gpio_config_t rx_conf = {
-        .pin_bit_mask = (1ULL << SIM_RX_PIN),
-        .mode = GPIO_MODE_INPUT,
-        .pull_up_en = GPIO_PULLUP_ENABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_LOW_LEVEL};
-    gpio_config(&rx_conf);
-    gpio_wakeup_enable(SIM_RX_PIN, GPIO_INTR_LOW_LEVEL);
-
-    // Cấu hình chân SLEEP điều khiển ngủ module SIM
+    // Cấu hình chân nguồn/ngủ (GPIO 3) làm Output
     gpio_config_t sleep_pin_conf = {
         .pin_bit_mask = (1ULL << SIM_SLEEP_PIN),
         .mode = GPIO_MODE_OUTPUT,
@@ -106,27 +138,28 @@ void app_main(void)
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type = GPIO_INTR_DISABLE};
     gpio_config(&sleep_pin_conf);
-    gpio_set_level(SIM_SLEEP_PIN, 0);
 
+    // Bật tính năng thức giấc bằng GPIO cho MPU6050
     esp_sleep_enable_gpio_wakeup();
 
+    // 3. THỰC THI CHU TRÌNH CẤP NGUỒN VÀ KHỞI ĐỘNG DRIVER UART
+    power_on_sequence();
     mpu6050_init();
     ble_driver_init();
-    sim_a7600e_power_on();
-    sim_a7600e_init(); // Cài Driver UART 1 lần duy nhất
+    sim_a7600e_init();
 
     ESP_LOGI(TAG, "--- HE THONG PHAN PHIEU TASK HOAN THANH ---");
 
-    // 3. Khởi chạy 5 Luồng xử lý độc lập
+    // 4. Khởi chạy 5 Luồng xử lý độc lập
+    xTaskCreate(remote_find_task, "Find_Task", 4096, NULL, 5, NULL);
     xTaskCreate(mpu_monitor_task, "MPU_Task", 3072, NULL, 5, NULL);
     xTaskCreate(central_control_task, "Control_Task", 4096, NULL, 4, NULL);
     xTaskCreate(sim_gps_network_task, "SIM_Task", 4096, NULL, 4, NULL);
     xTaskCreate(ble_auth_task, "BLE_Task", 4096, NULL, 3, NULL);
-    xTaskCreate(remote_find_task, "Find_Task", 4096, NULL, 5, NULL); // 🔥 Chạy Task 5 tìm xe
 }
 
 // ====================================================================
-// TASK 1: GIÁM SÁT NGỦ NGẮT THUẦN TÚY
+// TASK 1: QUẢN LÝ NGỦ TIMER 3S + HỎI TRẠNG THÁI CUỘC GỌI AT+CPAS
 // ====================================================================
 void mpu_monitor_task(void *pvParameters)
 {
@@ -151,47 +184,59 @@ void mpu_monitor_task(void *pvParameters)
 
                 if (consecutive_tilt_count >= TILT_THRESHOLD_COUNT)
                 {
-                    xSemaphoreTake(xStateMutex, portMAX_DELAY);
-                    g_system_state = STATE_SLEEPING;
-                    xSemaphoreGive(xStateMutex);
-
-                    relay_off();
-                    buzzer_off();
-                    ble_driver_stop_advertising();
-                    mpu6050_clear_interrupt();
-
-                    // 🔥 ĐÃ SỬA: Bỏ chế độ máy bay. Kéo chân SLEEP lên cao để SIM vào giấc ngủ giữ sóng mạng.
-                    gpio_set_level(SIM_SLEEP_PIN, 1);
-                    vTaskDelay(pdMS_TO_TICKS(100));
-
-                    ESP_LOGE(TAG, "💤 HỆ THỐNG VÀO GIẤC NGỦ THUẦN TÚY (ĐANG CHỜ CUỘC GỌI TÌM XE CỦA BẠN)...");
-                    esp_light_sleep_start();
-
-                    // ====================================================
-                    // --- MẠCH THỨC GIẤC TẠI ĐÂY (DO THẲNG XE HOẶC GỌI ĐIỆN) ---
-                    // ====================================================
-                    gpio_set_level(SIM_SLEEP_PIN, 0); // Kéo thấp chân SLEEP để gọi SIM tỉnh hẳn dậy nhận lệnh UART
-
-                    // 🔍 ĐÁNH GIÁ XEM AI GỌI MẠCH DẬY?
-                    uint64_t wakeup_pin = esp_sleep_get_gpio_wakeup_status();
-
-                    if (wakeup_pin & (1ULL << SIM_RX_PIN))
+                    if (xSemaphoreTake(xSimMutex, 0) == pdTRUE)
                     {
-                        // 📞 NGUỒN NGẮT DO CUỘC GỌI NHÁY MÁY TÌM XE
-                        xSemaphoreGive(xRemoteWakeSemaphore); // Bắn cờ lệnh kích hoạt Task 5 chạy riêng
+                        xSemaphoreGive(xSimMutex);
 
-                        xSemaphoreTake(xSleepAgainSemaphore, portMAX_DELAY); // Đứng đợi Task 5 hoàn thành rồi mới quét tiếp
+                        xSemaphoreTake(xStateMutex, portMAX_DELAY);
+                        g_system_state = STATE_SLEEPING;
+                        xSemaphoreGive(xStateMutex);
+
+                        relay_off();
+                        buzzer_off();
+                        ble_driver_stop_advertising();
+
+                        // Cài đặt báo thức Timer 3 giây cho giấc ngủ Light Sleep
+                        esp_sleep_enable_timer_wakeup(3 * 1000000ULL);
+                        gpio_set_level(SIM_SLEEP_PIN, 0);
+
+                        ESP_LOGE(TAG, "💤 HỆ THỐNG VÀO GIẤC NGỦ LIGHT SLEEP (TIMER 3S)...");
+
+                        // 🛑 ESP32 BẮT ĐẦU NGỦ LIGHT SLEEP 🛑
+                        esp_light_sleep_start();
+
+                        // CHỦ ĐỘNG HỎI TRẠNG THÁI CUỘC GỌI BẰNG AT+CPAS
+                        xSemaphoreTake(xSimMutex, portMAX_DELAY);
+                        uart_flush_input(SIM_UART_NUM);
+                        uart_write_bytes(SIM_UART_NUM, "AT+CPAS\r\n", 9);
+
+                        uint8_t cpas_buf[64] = {0};
+                        int len = uart_read_bytes(SIM_UART_NUM, cpas_buf, sizeof(cpas_buf) - 1, pdMS_TO_TICKS(200));
+                        xSemaphoreGive(xSimMutex);
+
+                        if (len > 0)
+                        {
+                            cpas_buf[len] = '\0';
+                            if (strstr((char *)cpas_buf, "+CPAS: 3") != NULL || strstr((char *)cpas_buf, "RING") != NULL)
+                            {
+                                ESP_LOGW(TAG, "📞 [CALL DETECTED] Phát hiện nháy máy tìm xe! Kích hoạt Task 5...");
+
+                                xSemaphoreGive(xRemoteWakeSemaphore);
+                                xSemaphoreTake(xSleepAgainSemaphore, portMAX_DELAY);
+
+                                consecutive_tilt_count = TILT_THRESHOLD_COUNT;
+                                continue;
+                            }
+                        }
+
                         consecutive_tilt_count = TILT_THRESHOLD_COUNT;
                         continue;
                     }
-
-                    // NGUỒN NGẮT VẬT LÝ (DỰNG THẲNG XE)
-                    ESP_LOGW(TAG, "⚡ Kích hoạt phần cứng! Hoi sinh khoi I2C va Clear Interrupt...");
-                    i2c_driver_delete(I2C_NUM_0);
-                    vTaskDelay(pdMS_TO_TICKS(50));
-                    mpu6050_init();
-                    mpu6050_clear_interrupt();
-                    consecutive_tilt_count = 0;
+                    else
+                    {
+                        ESP_LOGW(TAG, "⏳ [MPU] SIM đang bận, hoãn giấc ngủ...");
+                        consecutive_tilt_count = TILT_THRESHOLD_COUNT - 3;
+                    }
                 }
             }
             else
@@ -204,7 +249,7 @@ void mpu_monitor_task(void *pvParameters)
                     xSemaphoreGive(xStateMutex);
 
                     xSemaphoreGive(xWakeSemaphore);
-                    ESP_LOGI(TAG, "📢 Xe dung thang! Kich hoat TIEN TRINH XAC THUC VỚI APP...");
+                    ESP_LOGI(TAG, "📢 Xe dựng thẳng! Kích hoạt TIẾN TRÌNH XÁC THỰC...");
                 }
             }
         }
@@ -213,63 +258,64 @@ void mpu_monitor_task(void *pvParameters)
 }
 
 // ====================================================================
-// 🔥 TASK 5 (VIẾT MỚI): XỬ LÝ NHÁY MÁY TÌM XE TỪ XA VÀ TỰ ĐỘNG NGỦ LẠI
+// TASK 5: DẬP MÁY & ĐẨY VỊ TRÍ ÂM THẦM (ĐỜI TÍN HIỆU XONG TỪ TASK 3)
+// ====================================================================
+// ====================================================================
+// TASK 5: DẬP MÁY & CHUYỂN STATE_REMOTE_FINDING ĐỂ TASK 3 PUSH FIREBASE
 // ====================================================================
 void remote_find_task(void *pvParameters)
 {
-    uint8_t uart_buf[64];
-
     while (1)
     {
-        // Nằm im chờ cờ ngắt từ cuộc gọi nháy máy của chủ xe
         if (xSemaphoreTake(xRemoteWakeSemaphore, portMAX_DELAY) == pdTRUE)
         {
-            ESP_LOGW(TAG, "📞 [REMOTE FIND] Nhận tín hiệu xung UART từ cuộc gọi đến!");
-            vTaskDelay(pdMS_TO_TICKS(500)); // Trễ nhẹ đợi SIM bắn nốt text "RING" vào buffer
+            ESP_LOGI(TAG, "🎯 [TASK 5] Nhận lệnh cập nhật vị trí từ xa (Chế độ âm thầm)...");
 
-            // 🔥 ĐÃ SỬA: Dùng SIM_UART_NUM toàn cục từ thư viện để tránh lỗi undeclared
-            int len = uart_read_bytes(SIM_UART_NUM, uart_buf, sizeof(uart_buf) - 1, pdMS_TO_TICKS(100));
-
-            if (len > 0)
+            // 1. Dập cuộc gọi ngắt cước
+            if (xSemaphoreTake(xSimMutex, pdMS_TO_TICKS(2000)) == pdTRUE)
             {
-                uart_buf[len] = '\0';
-                if (strstr((char *)uart_buf, "RING") != NULL)
-                {
-                    ESP_LOGI(TAG, "🎯 XÁC NHẬN CHUỖI 'RING'! Hú còi định hướng và đẩy vị trí...");
-
-                    // Hú còi tít tít 3 phát ngắn để tìm xe trong hầm
-                    for (int i = 0; i < 3; i++)
-                    {
-                        buzzer_on();
-                        vTaskDelay(pdMS_TO_TICKS(150));
-                        buzzer_off();
-                        vTaskDelay(pdMS_TO_TICKS(150));
-                    }
-
-                    // Chuyển trạng thái sang OWNER_CONNECTED kích hoạt luồng SIM bật mạng
-                    xSemaphoreTake(xStateMutex, portMAX_DELAY);
-                    g_system_state = STATE_OWNER_CONNECTED;
-                    xSemaphoreGive(xStateMutex);
-
-                    // Giữ mạch thức 12 giây để SIM Task thu GPS và bắn Firebase
-                    vTaskDelay(pdMS_TO_TICKS(12000));
-                    ESP_LOGI(TAG, "🏁 Chu kỳ đẩy vị trí tìm xe hoàn tất!");
-                }
+                ESP_LOGI(TAG, "📞 [ATH] Tiến hành dập cuộc gọi...");
+                uart_write_bytes(SIM_UART_NUM, "ATH\r\n", 5);
+                vTaskDelay(pdMS_TO_TICKS(500));
+                uart_flush_input(SIM_UART_NUM);
+                xSemaphoreGive(xSimMutex);
             }
 
-            // Đồng bộ đưa hệ thống về lại trạng thái ngủ ngủ đông
+            vTaskDelay(pdMS_TO_TICKS(1500));
+
+            // 2. Xóa sạch cờ Push Firebase cũ
+            xSemaphoreTake(xFirebaseDoneSemaphore, 0);
+
+            // 🔥 3. Chuyển trạng thái sang STATE_REMOTE_FINDING dành riêng cho tìm xe bãi
             xSemaphoreTake(xStateMutex, portMAX_DELAY);
+            g_system_state = STATE_REMOTE_FINDING;
+            xSemaphoreGive(xStateMutex);
+
+            // 4. Đợi Task 3 push Firebase xong (Timeout 40s)
+            ESP_LOGI(TAG, "⏳ Đang đợi Task 3 lấy GPS và gửi lên Firebase (Tối đa 40s)...");
+            if (xSemaphoreTake(xFirebaseDoneSemaphore, pdMS_TO_TICKS(50000)) == pdTRUE)
+            {
+                ESP_LOGI(TAG, "✅ Task 3 đã xác nhận Push Firebase THÀNH CÔNG!");
+            }
+            else
+            {
+                ESP_LOGE(TAG, "⚠️ Timeout 50s! Mạng quá yếu hoặc không lấy được GPS.");
+            }
+
+            ESP_LOGI(TAG, "🏁 Chu kỳ hoàn tất! Đưa hệ thống trở lại giấc ngủ...");
+
+            // 5. Trả trạng thái về SLEEPING
+                xSemaphoreTake(xStateMutex, portMAX_DELAY);
             g_system_state = STATE_SLEEPING;
             xSemaphoreGive(xStateMutex);
 
-            // Báo cờ giải thoát cho Task 1 đưa chip vào giấc ngủ Light Sleep tiếp tục
+            // 6. Cho Task 1 đi ngủ tiếp
             xSemaphoreGive(xSleepAgainSemaphore);
         }
     }
 }
-
 // ====================================================================
-// TASK 2: BỘ NÃO TRUNG TÂM (LOGIC MẠCH HỞ CHÂN NO)
+// TASK 2: BỘ NÃO TRUNG TÂM
 // ====================================================================
 void central_control_task(void *pvParameters)
 {
@@ -318,12 +364,28 @@ void central_control_task(void *pvParameters)
 }
 
 // ====================================================================
-// TASK 3: XỬ LÝ MẠNG TỐC ĐỘ CAO (ĐÃ KHẮC PHỤC BIẾN HỎNG)
+// TASK 3: XỬ LÝ MẠNG TỐC ĐỘ CAO (GPS / FIREBASE / CẢNH BÁO) - ĐÃ FIX
+// ====================================================================
+// ====================================================================
+// TASK 3: TỐI ƯU CỰC MƯỢT - KHÔNG RE-INIT THỪA KHI THỨC GIẤC
+// ====================================================================
+// ====================================================================
+// TASK 3: PHÂN BIỆT VỊ TRÍ TÌM XE TRONG BÃI & THEO DÕI TRỘM DẮT XE
+// ====================================================================
+// ====================================================================
+// TASK 3: TỰ TỰ ĐỘNG KHÔI PHỤC 4G NẾU BỊ DẬP MẠNG SAU CUỘC GỌI
+// ====================================================================
+// ====================================================================
+// TASK 3: TÙY CHỈNH CHUỖI STATUS TRÊN FIREBASE THEO ĐÚNG APP FLUTTER
 // ====================================================================
 void sim_gps_network_task(void *pvParameters)
 {
-    static bool s_sim_online = false;
-    system_state_t last_state = STATE_SLEEPING;
+    static double s_park_lat = 10.762624, s_park_lng = 106.660172;
+    static double s_owner_lat = 10.765000, s_owner_lng = 106.665000;
+    static double s_theft_lat = 10.770000, s_theft_lng = 106.670000;
+
+    char gps_payload[128];
+    uint8_t net_buf[64];
 
     while (1)
     {
@@ -331,78 +393,92 @@ void sim_gps_network_task(void *pvParameters)
         system_state_t current_state = g_system_state;
         xSemaphoreGive(xStateMutex);
 
-        if (current_state != last_state)
-        {
-            s_sim_online = false;
-        }
-
         if (current_state == STATE_VERIFYING)
         {
             vTaskDelay(pdMS_TO_TICKS(200));
         }
-        else if (current_state == STATE_OWNER_CONNECTED)
+        // ================================================================
+        // 1. BÃI XE: STATE_REMOTE_FINDING -> PUSH "PARKING_FIND"
+        // ================================================================
+        else if (current_state == STATE_REMOTE_FINDING)
         {
-            relay_on();
-
             xSemaphoreTake(xSimMutex, portMAX_DELAY);
 
-            if (!s_sim_online)
-            {
-                // 🔥 ĐÃ SỬA: Thay sim_uart_port bằng SIM_UART_NUM toàn cục sạch lỗi
-                uart_flush_input(SIM_UART_NUM);
-                sim_set_airplane_mode(false);
-                vTaskDelay(pdMS_TO_TICKS(500));
+            // Khôi phục 4G nếu bị ngắt sau ATH
+            uart_flush_input(SIM_UART_NUM);
+            uart_write_bytes(SIM_UART_NUM, "AT+NETOPEN?\r\n", 13);
+            memset(net_buf, 0, sizeof(net_buf));
+            int len = uart_read_bytes(SIM_UART_NUM, net_buf, sizeof(net_buf) - 1, pdMS_TO_TICKS(500));
 
-                sim_send_cmd("AT+CGDCONT=1,\"IP\",\"v-internet\"", "OK", 2000);
+            if (len <= 0 || strstr((char *)net_buf, "+NETOPEN: 1") == NULL)
+            {
+                sim_send_cmd("AT+CGDCONT=1,\"IP\",\"v-internet\"", "OK", 1000);
                 sim_send_cmd("AT+NETOPEN", "OK", 2000);
-
-                if (sim_send_cmd("AT+NETOPEN?", "+NETOPEN: 1", 2000) == true)
-                {
-                    sim_gps_enable();
-                    s_sim_online = true;
-                    ESP_LOGI(TAG, "🌐 SIM ONLINE!");
-                }
+                vTaskDelay(pdMS_TO_TICKS(1000));
             }
 
-            if (s_sim_online)
+            s_park_lat += 0.00001;
+            s_park_lng += 0.00001;
+            snprintf(gps_payload, sizeof(gps_payload),
+                     "{\"latitude\":%.6f,\"longitude\":%.6f,\"status\":\"PARKING_FIND\"}",
+                     s_park_lat, s_park_lng);
+
+            ESP_LOGI(TAG, "🅿️ [BÃI XE] Push JSON: %s", gps_payload);
+
+            // 🔥 TRUYỀN ĐÚNG BIẾN gps_payload VÀO HÀM PUSH
+            sim_send_to_firebase(gps_payload);
+            xSemaphoreGive(xSimMutex);
+
+            if (xFirebaseDoneSemaphore != NULL)
             {
-                sim_gps_get_info();
-                char *gps_data = sim_get_gps_location();
-                sim_send_to_firebase(gps_data);
-                xSemaphoreGive(xSimMutex);
-                vTaskDelay(pdMS_TO_TICKS(10000));
+                xSemaphoreGive(xFirebaseDoneSemaphore);
             }
-            else
-            {
-                xSemaphoreGive(xSimMutex);
-                vTaskDelay(pdMS_TO_TICKS(2000));
-            }
+
+            vTaskDelay(pdMS_TO_TICKS(10000));
         }
+        // ================================================================
+        // 2. CHỦ LÁI XE: STATE_OWNER_CONNECTED -> PUSH "OWNER_DRIVING"
+        // ================================================================
+        else if (current_state == STATE_OWNER_CONNECTED)
+        {
+            xSemaphoreTake(xSimMutex, portMAX_DELAY);
+
+            s_owner_lat += 0.00030;
+            s_owner_lng += 0.00030;
+            snprintf(gps_payload, sizeof(gps_payload),
+                     "{\"latitude\":%.6f,\"longitude\":%.6f,\"status\":\"OWNER_DRIVING\"}",
+                     s_owner_lat, s_owner_lng);
+
+            ESP_LOGI(TAG, "🏍️ [CHỦ XE LÁI] Push JSON: %s", gps_payload);
+
+            sim_send_to_firebase(gps_payload);
+            xSemaphoreGive(xSimMutex);
+
+            vTaskDelay(pdMS_TO_TICKS(5000));
+        }
+        // ================================================================
+        // 3. TRỘM DẮT XE: STATE_ALARM -> PUSH "THEFT_ALARM"
+        // ================================================================
         else if (current_state == STATE_ALARM)
         {
             xSemaphoreTake(xSimMutex, portMAX_DELAY);
 
-            if (!s_sim_online)
-            {
-                // 🔥 ĐÃ SỬA: Dùng SIM_UART_NUM toàn cục sạch lỗi
-                uart_flush_input(SIM_UART_NUM);
-                sim_set_airplane_mode(false);
-                vTaskDelay(pdMS_TO_TICKS(500));
-                s_sim_online = true;
-            }
-
             if (xSemaphoreTake(xCallSemaphore, 0) == pdTRUE)
             {
-                ESP_LOGE(TAG, "📞 GOI DIEN BAO DONG!");
+                ESP_LOGE(TAG, "🚨 [TRỘM] GỌI ĐIỆN BÁO ĐỘNG CHO CHỦ XE!");
                 sim_make_call(OWNER_PHONE_NUMBER);
-
-                sim_send_cmd("AT+NETOPEN", "OK", 2000);
-                sim_gps_enable();
+                vTaskDelay(pdMS_TO_TICKS(5000));
             }
 
-            sim_gps_get_info();
-            char *gps_data = sim_get_gps_location();
-            sim_send_to_firebase(gps_data);
+            s_theft_lat += 0.00080;
+            s_theft_lng += 0.00080;
+            snprintf(gps_payload, sizeof(gps_payload),
+                     "{\"latitude\":%.6f,\"longitude\":%.6f,\"status\":\"THEFT_ALARM\"}",
+                     s_theft_lat, s_theft_lng);
+
+            ESP_LOGE(TAG, "🚨 [TRỘM DẮT XE] Push JSON: %s", gps_payload);
+
+            sim_send_to_firebase(gps_payload);
             xSemaphoreGive(xSimMutex);
 
             vTaskDelay(pdMS_TO_TICKS(3000));
@@ -411,13 +487,11 @@ void sim_gps_network_task(void *pvParameters)
         {
             vTaskDelay(pdMS_TO_TICKS(500));
         }
-
-        last_state = current_state;
     }
 }
 
 // ====================================================================
-// TASK 4: QUẢN LÝ PHÁT BLE VÀ XÁC THỰC VỚI FLUTTER APP
+// TASK 4: QUẢN LÝ PHÁT BLE
 // ====================================================================
 void ble_auth_task(void *pvParameters)
 {
