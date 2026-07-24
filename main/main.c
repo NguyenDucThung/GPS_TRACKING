@@ -10,13 +10,13 @@
 #include "driver/i2c.h"
 #include "driver/uart.h"
 
-//CẤU HÌNH SỐ ĐIỆN THOẠI
+// CẤU HÌNH SỐ ĐIỆN THOẠI
 #define OWNER_PHONE_NUMBER "0854383970"
-#define SIM_SLEEP_PIN 3 // Chân điều khiển PWR 
+#define SIM_SLEEP_PIN 3 // Chân điều khiển PWR
 
 // Include các driver độc lập từ thư mục components
 #include "mpu6050.h"
-#include "sim_a7600e.h" 
+#include "sim_a7600e.h"
 #include "ble_driver.h"
 #include "buzzer.h"
 #include "relay.h"
@@ -32,7 +32,7 @@ typedef enum
     STATE_ALARM
 } system_state_t;
 
-// Biến trạng thái toàn cục 
+// Biến trạng thái toàn cục
 static system_state_t g_system_state = STATE_SLEEPING;
 SemaphoreHandle_t xStateMutex;
 SemaphoreHandle_t xWakeSemaphore;
@@ -40,7 +40,7 @@ SemaphoreHandle_t xAuthSemaphore;
 SemaphoreHandle_t xCallSemaphore;
 SemaphoreHandle_t xSimMutex;
 
-// CỜ LỆNH CHO TASK 5 
+// CỜ LỆNH CHO TASK 5
 SemaphoreHandle_t xRemoteWakeSemaphore;
 SemaphoreHandle_t xSleepAgainSemaphore;
 SemaphoreHandle_t xFirebaseDoneSemaphore; // Cờ báo Task 3 đã push Firebase xong
@@ -52,7 +52,6 @@ void sim_gps_network_task(void *pvParameters);
 void ble_auth_task(void *pvParameters);
 void remote_find_task(void *pvParameters);
 
-
 // HÀM TIẾP NHẬN TÍN HIỆU XÁC THỰC THÀNH CÔNG TỪ BLE
 void main_system_auth_success(void)
 {
@@ -62,7 +61,6 @@ void main_system_auth_success(void)
         ESP_LOGI(TAG, "Đã tiếp nhận tín hiệu từ BLE! Mở khóa xe cấp tốc...");
     }
 }
-
 
 // HÀM ỔN ĐỊNH UART VÀ LÀM SẠCH RÁC CHO SIM SAU KHI THỨC GIẤC
 void sim_stabilize_uart(void)
@@ -79,7 +77,7 @@ void sim_stabilize_uart(void)
     ESP_LOGI("SIM_UTIL", "Đường truyền UART với SIM đã sạch sẽ và sẵn sàng!");
 }
 
-// CHU TRÌNH CẤP NGUỒN 
+// CHU TRÌNH CẤP NGUỒN
 void power_on_sequence(void)
 {
     ESP_LOGI(TAG, "===== KHỞI ĐỘNG CHU TRÌNH KÍCH NGUỒN MODULE SIM =====");
@@ -88,7 +86,7 @@ void power_on_sequence(void)
     gpio_set_level(SIM_SLEEP_PIN, 0);
     vTaskDelay(pdMS_TO_TICKS(500));
 
-    // 2. Kéo lên HIGH trong 3 giây 
+    // 2. Kéo lên HIGH trong 3 giây
     ESP_LOGI(TAG, "-> Chân PWR (GPIO%d) lên HIGH (Giữ 3s)...", SIM_SLEEP_PIN);
     gpio_set_level(SIM_SLEEP_PIN, 1);
     vTaskDelay(pdMS_TO_TICKS(3000));
@@ -116,7 +114,7 @@ void app_main(void)
     buzzer_init();
     relay_init();
 
-    // Cấu hình chân ngắt từ cảm biến nghiêng MPU6050 
+    // Cấu hình chân ngắt từ cảm biến nghiêng MPU6050
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << WAKEUP_GPIO_PIN),
         .mode = GPIO_MODE_INPUT,
@@ -143,6 +141,7 @@ void app_main(void)
     mpu6050_init();
     ble_driver_init();
     sim_a7600e_init();
+    sim_gps_enable(); // Kích hoạt nguồn GPS phần cứng
 
     ESP_LOGI(TAG, "--- HE THONG TASK HOAN THANH ---");
 
@@ -154,8 +153,7 @@ void app_main(void)
     xTaskCreate(ble_auth_task, "BLE_Task", 4096, NULL, 3, NULL);
 }
 
-
-// TASK 1: QUẢN LÝ NGỦ TIMER 3S 
+// TASK 1: QUẢN LÝ NGỦ TIMER 3S
 void mpu_monitor_task(void *pvParameters)
 {
     float pitch = 0.0;
@@ -197,7 +195,6 @@ void mpu_monitor_task(void *pvParameters)
 
                         ESP_LOGE(TAG, "HỆ THỐNG VÀO GIẤC NGỦ LIGHT SLEEP (TIMER 3S)...");
 
-                       
                         esp_light_sleep_start();
 
                         // CHỦ ĐỘNG HỎI TRẠNG THÁI CUỘC GỌI BẰNG AT+CPAS
@@ -252,8 +249,6 @@ void mpu_monitor_task(void *pvParameters)
     }
 }
 
-
-
 // TASK 5: DẬP MÁY & CHUYỂN STATE_REMOTE_FINDING ĐỂ TASK 3 PUSH FIREBASE
 void remote_find_task(void *pvParameters)
 {
@@ -297,7 +292,7 @@ void remote_find_task(void *pvParameters)
             ESP_LOGI(TAG, " Chu kỳ hoàn tất! Đưa hệ thống trở lại giấc ngủ...");
 
             // 5. Trả trạng thái về SLEEPING
-                xSemaphoreTake(xStateMutex, portMAX_DELAY);
+            xSemaphoreTake(xStateMutex, portMAX_DELAY);
             g_system_state = STATE_SLEEPING;
             xSemaphoreGive(xStateMutex);
 
@@ -354,14 +349,9 @@ void central_control_task(void *pvParameters)
     }
 }
 
-
 // TASK 3: THAO TÁC SIM
 void sim_gps_network_task(void *pvParameters)
 {
-    static double s_park_lat = 10.762624, s_park_lng = 106.660172;
-    static double s_owner_lat = 10.765000, s_owner_lng = 106.665000;
-    static double s_theft_lat = 10.770000, s_theft_lng = 106.670000;
-
     char gps_payload[128];
     uint8_t net_buf[64];
 
@@ -394,11 +384,25 @@ void sim_gps_network_task(void *pvParameters)
                 vTaskDelay(pdMS_TO_TICKS(1000));
             }
 
-            s_park_lat += 0.00001;
-            s_park_lng += 0.00001;
+            // Đọc tọa độ GPS thật từ phần cứng A7600E
+            sim_gps_get_info();
+            char *gps_str = sim_get_gps_location();
+            double real_lat = 0.0, real_lng = 0.0;
+
+            if (gps_str != NULL)
+            {
+                char *lat_ptr = strstr(gps_str, "\"latitude\":");
+                char *lng_ptr = strstr(gps_str, "\"longitude\":");
+                if (lat_ptr && lng_ptr)
+                {
+                    sscanf(lat_ptr, "\"latitude\":%lf", &real_lat);
+                    sscanf(lng_ptr, "\"longitude\":%lf", &real_lng);
+                }
+            }
+
             snprintf(gps_payload, sizeof(gps_payload),
                      "{\"latitude\":%.6f,\"longitude\":%.6f,\"status\":\"PARKING_FIND\"}",
-                     s_park_lat, s_park_lng);
+                     real_lat, real_lng);
 
             ESP_LOGI(TAG, "[BÃI XE] Push JSON: %s", gps_payload);
 
@@ -415,16 +419,43 @@ void sim_gps_network_task(void *pvParameters)
         }
 
         // 2. CHỦ LÁI XE: STATE_OWNER_CONNECTED -> PUSH "OWNER_DRIVING"
-       
+
         else if (current_state == STATE_OWNER_CONNECTED)
         {
             xSemaphoreTake(xSimMutex, portMAX_DELAY);
 
-            s_owner_lat += 0.00030;
-            s_owner_lng += 0.00030;
+            // Khôi phục 4G nếu bị ngắt kết nối
+            uart_flush_input(SIM_UART_NUM);
+            uart_write_bytes(SIM_UART_NUM, "AT+NETOPEN?\r\n", 13);
+            memset(net_buf, 0, sizeof(net_buf));
+            int len = uart_read_bytes(SIM_UART_NUM, net_buf, sizeof(net_buf) - 1, pdMS_TO_TICKS(500));
+
+            if (len <= 0 || strstr((char *)net_buf, "+NETOPEN: 1") == NULL)
+            {
+                sim_send_cmd("AT+CGDCONT=1,\"IP\",\"v-internet\"", "OK", 1000);
+                sim_send_cmd("AT+NETOPEN", "OK", 2000);
+                vTaskDelay(pdMS_TO_TICKS(1000));
+            }
+
+            // Đọc tọa độ GPS thật từ phần cứng A7600E
+            sim_gps_get_info();
+            char *gps_str = sim_get_gps_location();
+            double real_lat = 0.0, real_lng = 0.0;
+
+            if (gps_str != NULL)
+            {
+                char *lat_ptr = strstr(gps_str, "\"latitude\":");
+                char *lng_ptr = strstr(gps_str, "\"longitude\":");
+                if (lat_ptr && lng_ptr)
+                {
+                    sscanf(lat_ptr, "\"latitude\":%lf", &real_lat);
+                    sscanf(lng_ptr, "\"longitude\":%lf", &real_lng);
+                }
+            }
+
             snprintf(gps_payload, sizeof(gps_payload),
                      "{\"latitude\":%.6f,\"longitude\":%.6f,\"status\":\"OWNER_DRIVING\"}",
-                     s_owner_lat, s_owner_lng);
+                     real_lat, real_lng);
 
             ESP_LOGI(TAG, "🏍️ [CHỦ XE LÁI] Push JSON: %s", gps_payload);
 
@@ -433,24 +464,58 @@ void sim_gps_network_task(void *pvParameters)
 
             vTaskDelay(pdMS_TO_TICKS(5000));
         }
-      
+
         // 3. TRỘM DẮT XE: STATE_ALARM -> PUSH "THEFT_ALARM"
         else if (current_state == STATE_ALARM)
         {
             xSemaphoreTake(xSimMutex, portMAX_DELAY);
 
+            // 🔥 SỬA LỖI: Thực hiện cuộc gọi xong BẮT BỘC dập máy (ATH) và ngắt chuông
             if (xSemaphoreTake(xCallSemaphore, 0) == pdTRUE)
             {
                 ESP_LOGE(TAG, "[TRỘM] GỌI ĐIỆN BÁO ĐỘNG CHO CHỦ XE!");
                 sim_make_call(OWNER_PHONE_NUMBER);
-                vTaskDelay(pdMS_TO_TICKS(5000));
+
+                // Đổ chuông báo động trong 6 giây
+                vTaskDelay(pdMS_TO_TICKS(6000));
+
+                ESP_LOGI(TAG, "[TRỘM] Dập cuộc gọi thoại (ATH) để giải phóng mạng Data...");
+                sim_hang_up();                   // Gửi lệnh ATH ngắt cuộc gọi
+                vTaskDelay(pdMS_TO_TICKS(2000)); // Chờ SIM bám lại mạng 4G
             }
 
-            s_theft_lat += 0.00080;
-            s_theft_lng += 0.00080;
+            // Khôi phục 4G sau cuộc gọi
+            uart_flush_input(SIM_UART_NUM);
+            uart_write_bytes(SIM_UART_NUM, "AT+NETOPEN?\r\n", 13);
+            memset(net_buf, 0, sizeof(net_buf));
+            int len = uart_read_bytes(SIM_UART_NUM, net_buf, sizeof(net_buf) - 1, pdMS_TO_TICKS(500));
+
+            if (len <= 0 || strstr((char *)net_buf, "+NETOPEN: 1") == NULL)
+            {
+                sim_send_cmd("AT+CGDCONT=1,\"IP\",\"v-internet\"", "OK", 1000);
+                sim_send_cmd("AT+NETOPEN", "OK", 2000);
+                vTaskDelay(pdMS_TO_TICKS(1000));
+            }
+
+            // Đọc tọa độ GPS thật từ phần cứng A7600E
+            sim_gps_get_info();
+            char *gps_str = sim_get_gps_location();
+            double real_lat = 0.0, real_lng = 0.0;
+
+            if (gps_str != NULL)
+            {
+                char *lat_ptr = strstr(gps_str, "\"latitude\":");
+                char *lng_ptr = strstr(gps_str, "\"longitude\":");
+                if (lat_ptr && lng_ptr)
+                {
+                    sscanf(lat_ptr, "\"latitude\":%lf", &real_lat);
+                    sscanf(lng_ptr, "\"longitude\":%lf", &real_lng);
+                }
+            }
+
             snprintf(gps_payload, sizeof(gps_payload),
                      "{\"latitude\":%.6f,\"longitude\":%.6f,\"status\":\"THEFT_ALARM\"}",
-                     s_theft_lat, s_theft_lng);
+                     real_lat, real_lng);
 
             ESP_LOGE(TAG, "🚨 [TRỘM DẮT XE] Push JSON: %s", gps_payload);
 
@@ -465,7 +530,6 @@ void sim_gps_network_task(void *pvParameters)
         }
     }
 }
-
 
 // TASK 4: QUẢN LÝ PHÁT BLE
 void ble_auth_task(void *pvParameters)
