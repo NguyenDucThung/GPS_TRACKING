@@ -7,11 +7,6 @@
 
 static const char *TAG = "SIM_A7600E";
 
-// Bộ đệm tĩnh lưu trữ chuỗi JSON tọa độ để trả về cho hàm main
-static char g_gps_json_buf[128] = "{\"latitude\":10.762624,\"longitude\":106.660172,\"status\":\"Initial\"}";
-static double s_fake_lat = 10.762624; // Tọa độ gốc giả lập khu vực TP.HCM khi mất sóng GPS
-static double s_fake_lng = 106.660172;
-
 // Hàm kích nguồn cứng (Cấu trúc xung chuẩn cho mạch đệm Transistor)
 void sim_a7600e_power_on(void)
 {
@@ -20,7 +15,8 @@ void sim_a7600e_power_on(void)
         .mode = GPIO_MODE_OUTPUT,
         .pull_up_en = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE};
+        .intr_type = GPIO_INTR_DISABLE
+    };
     gpio_config(&io_conf);
 
     // 1. Thả nút nguồn ban đầu
@@ -87,88 +83,6 @@ esp_err_t sim_send_cmd(const char *cmd, const char *expected_resp, uint32_t time
     return ESP_FAIL;
 }
 
-// Hàm bật nguồn module GPS
-esp_err_t sim_gps_enable(void)
-{
-    ESP_LOGI(TAG, "Dang kich hoat nguon khoi hanh trinh GPS/GNSS...");
-    if (sim_send_cmd("AT+CGNSSPWR=1", "OK", 2000) == ESP_OK)
-    {
-        ESP_LOGI(TAG, "Nguon GPS da bat.");
-        return ESP_OK;
-    }
-    return ESP_FAIL;
-}
-
-// Hàm đọc tọa độ GPS mẫu và tự động gối đầu tọa độ giả lập khi ở trong nhà
-void sim_gps_get_info(void)
-{
-    char data[BUF_SIZE];
-    memset(data, 0, BUF_SIZE);
-
-    uart_flush_input(SIM_UART_NUM);
-    uart_write_bytes(SIM_UART_NUM, "AT+CGNSSINFO\r\n", 14);
-
-    int len = uart_read_bytes(SIM_UART_NUM, (uint8_t *)data, BUF_SIZE - 1, pdMS_TO_TICKS(2000));
-
-    if (len > 0)
-    {
-        data[len] = '\0';
-        char *p = strstr(data, "+CGNSSINFO:");
-        if (p)
-        {
-            // Nếu chưa fix được vệ tinh (ở trong nhà test mạch) -> Tự động kích hoạt giả lập nhảy số
-            if (strstr(p, ",,,,,,,") != NULL || strstr(p, "+CGNSSINFO: ,") != NULL)
-            {
-                ESP_LOGW(TAG, "GPS chưa fix vị trí -> Tự động chuyển sang chế độ giả lập hành trình...");
-                s_fake_lat += 0.00015;
-                s_fake_lng += 0.00010;
-                snprintf(g_gps_json_buf, sizeof(g_gps_json_buf), 
-                         "{\"latitude\":%.6f,\"longitude\":%.6f,\"status\":\"Simulated\"}", 
-                         s_fake_lat, s_fake_lng);
-            }
-            // Nếu đã bắt được vệ tinh thật ngoài trời
-            else
-            {
-                int mode, gps_sv, glo_sv, bd_sv, gal_sv;
-                double raw_lat, raw_lon;
-                char lat_dir, lon_dir;
-                
-                if (sscanf(p, "+CGNSSINFO: %d,%d,%d,%d,%d,%lf,%c,%lf,%c", 
-                           &mode, &gps_sv, &glo_sv, &bd_sv, &gal_sv, &raw_lat, &lat_dir, &raw_lon, &lon_dir) >= 9) 
-                {
-                    // Chuyển đổi định dạng DDMM.MMMMMM -> Độ thập phân
-                    int lat_deg = (int)(raw_lat / 100);
-                    double lat_min = raw_lat - (lat_deg * 100);
-                    double final_lat = lat_deg + (lat_min / 60.0);
-                    if (lat_dir == 'S') final_lat = -final_lat;
-
-                    int lon_deg = (int)(raw_lon / 100);
-                    double lon_min = raw_lon - (lon_deg * 100);
-                    double final_lon = lon_deg + (lon_min / 60.0);
-                    if (lon_dir == 'W') final_lon = -final_lon;
-
-                    snprintf(g_gps_json_buf, sizeof(g_gps_json_buf), 
-                             "{\"latitude\":%.6f,\"longitude\":%.6f,\"status\":\"Real_GPS\"}", 
-                             final_lat, final_lon);
-                             
-                    s_fake_lat = final_lat;
-                    s_fake_lng = final_lon;
-                }
-            }
-        }
-    }
-    else
-    {
-        ESP_LOGE(TAG, "Loi mat ket noi du lieu khi truy van chip GPS");
-    }
-}
-
-// Trả về con trỏ chuỗi chứa JSON vị trí hoàn chỉnh cho main.c gọi
-char* sim_get_gps_location(void)
-{
-    return g_gps_json_buf;
-}
-
 // Hàm thực hiện cuộc gọi
 esp_err_t sim_make_call(const char *phone_number)
 {
@@ -183,7 +97,7 @@ void sim_hang_up(void)
     sim_send_cmd("ATH", "OK", 2000);
 }
 
-// 🔥 GIỮ NGUYÊN 100% BẢN CODE TEST THÀNH CÔNG CỦA ÔNG THUẬN
+// Gửi payload JSON lên Firebase qua SIM A7600E
 esp_err_t sim_send_to_firebase(const char *json_payload)
 {
     char cmd[256];

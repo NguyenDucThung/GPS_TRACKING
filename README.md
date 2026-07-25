@@ -1,0 +1,7 @@
+ĐÂY LÀ ĐỀ TÀI QUẢN LÝ PHƯƠNG TIỆN CÁ NHÂN( XE MÁY) THEO THỜI GIAN THỰC
+CHỨC NĂNG CHÍNH:
+TÌM XE TRONG BÃI
+CẢNH BÁO KHI CÓ TRỘM
+THEO DÕI VỊ TRÍ CỦA XE
+
+   
