@@ -29,5 +29,5 @@ esp_err_t neo6m_set_power(bool enable);
 bool neo6m_is_powered(void);
 
 bool neo6m_read_gps(neo6m_gps_data_t *out_data);
-
+bool neo6m_get_latest_fix(neo6m_gps_data_t *out_data, uint32_t timeout_ms);
 #endif

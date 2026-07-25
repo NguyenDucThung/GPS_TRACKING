@@ -47,6 +47,10 @@ SemaphoreHandle_t xRemoteWakeSemaphore;
 SemaphoreHandle_t xSleepAgainSemaphore;
 SemaphoreHandle_t xFirebaseDoneSemaphore; // Cờ báo Task 3 đã push Firebase xong
 
+// VỊ TRÍ LƯU TRỮ DỰ PHÒNG
+static double g_last_saved_lat = 0.0;
+static double g_last_saved_lng = 0.0;
+
 // Khai báo các Task
 void mpu_monitor_task(void *pvParameters);
 void central_control_task(void *pvParameters);
@@ -84,16 +88,13 @@ void power_on_sequence(void)
 {
     ESP_LOGI(TAG, "===== KHỞI ĐỘNG CHU TRÌNH KÍCH NGUỒN MODULE SIM =====");
 
-    // 1. Đưa về trạng thái tĩnh ban đầu
     gpio_set_level(SIM_SLEEP_PIN, 0);
     vTaskDelay(pdMS_TO_TICKS(500));
 
-    // 2. Kéo lên HIGH trong 3 giây
     ESP_LOGI(TAG, "-> Chân PWR (GPIO%d) lên HIGH (Giữ 3s)...", SIM_SLEEP_PIN);
     gpio_set_level(SIM_SLEEP_PIN, 1);
     vTaskDelay(pdMS_TO_TICKS(3000));
 
-    // 3. Thả về LOW và đợi 5 giây cho module bung sóng ổn định
     gpio_set_level(SIM_SLEEP_PIN, 0);
     ESP_LOGI(TAG, "-> Đã thả chân PWR về LOW. Chờ SIM bám mạng ổn định trong 5s...");
     vTaskDelay(pdMS_TO_TICKS(5000));
@@ -101,7 +102,6 @@ void power_on_sequence(void)
 
 void app_main(void)
 {
-    // 1. BẮT BỘC: Khởi tạo NVS Flash cho Bluetooth & PHY Calibration
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND)
     {
@@ -110,7 +110,6 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    // 1. Khởi tạo cơ chế RTOS
     xStateMutex = xSemaphoreCreateMutex();
     xSimMutex = xSemaphoreCreateMutex();
 
@@ -121,11 +120,9 @@ void app_main(void)
     xSleepAgainSemaphore = xSemaphoreCreateBinary();
     xFirebaseDoneSemaphore = xSemaphoreCreateBinary();
 
-    // 2. Khởi tạo cấu hình GPIO ngoại vi
     buzzer_init();
     relay_init();
 
-    // Cấu hình chân ngắt từ cảm biến nghiêng MPU6050
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << WAKEUP_GPIO_PIN),
         .mode = GPIO_MODE_INPUT,
@@ -135,7 +132,6 @@ void app_main(void)
     gpio_config(&io_conf);
     gpio_wakeup_enable(WAKEUP_GPIO_PIN, GPIO_INTR_HIGH_LEVEL);
 
-    // Cấu hình chân nguồn GPIO 3 làm Output
     gpio_config_t sleep_pin_conf = {
         .pin_bit_mask = (1ULL << SIM_SLEEP_PIN),
         .mode = GPIO_MODE_OUTPUT,
@@ -144,21 +140,18 @@ void app_main(void)
         .intr_type = GPIO_INTR_DISABLE};
     gpio_config(&sleep_pin_conf);
 
-    // Bật tính năng thức giấc bằng GPIO cho MPU6050
     esp_sleep_enable_gpio_wakeup();
 
-    // 3. THỰC THI CHU TRÌNH CẤP NGUỒN VÀ KHỞI ĐỘNG DRIVER PHẦN CỨNG
     power_on_sequence();
     mpu6050_init();
     ble_driver_init();
     sim_a7600e_init();
 
-    // [MỚI]: Khởi tạo GPIO 18 điều khiển Transistor C1815 cấp nguồn GPS (Mặc định ngắt GPS lúc mới lên nguồn)
+    // Khởi tạo GPS (Mặc định ngắt nguồn)
     neo6m_power_init();
 
     ESP_LOGI(TAG, "--- HE THONG TASK HOAN THANH ---");
 
-    // 4. Khởi chạy 5 Luồng
     xTaskCreate(remote_find_task, "Find_Task", 4096, NULL, 5, NULL);
     xTaskCreate(mpu_monitor_task, "MPU_Task", 3072, NULL, 5, NULL);
     xTaskCreate(central_control_task, "Control_Task", 4096, NULL, 4, NULL);
@@ -202,10 +195,9 @@ void mpu_monitor_task(void *pvParameters)
                         buzzer_off();
                         ble_driver_stop_advertising();
 
-                        // [MỚI]: Tắt triệt để nguồn GPS NEO-6M trước khi đi ngủ
+                        // Đảm bảo GPS đã tắt triệt để trước khi vào giấc ngủ
                         neo6m_set_power(false);
 
-                        // Cài đặt báo thức Timer 3 giây cho giấc ngủ Light Sleep
                         esp_sleep_enable_timer_wakeup(3 * 1000000ULL);
                         gpio_set_level(SIM_SLEEP_PIN, 0);
 
@@ -228,7 +220,6 @@ void mpu_monitor_task(void *pvParameters)
                             if (strstr((char *)cpas_buf, "+CPAS: 3") != NULL || strstr((char *)cpas_buf, "RING") != NULL)
                             {
                                 ESP_LOGW(TAG, "[CALL DETECTED] Phát hiện nháy máy tìm xe! Kích hoạt Task 5...");
-
                                 xSemaphoreGive(xRemoteWakeSemaphore);
                                 xSemaphoreTake(xSleepAgainSemaphore, portMAX_DELAY);
 
@@ -265,14 +256,15 @@ void mpu_monitor_task(void *pvParameters)
     }
 }
 
-// TASK 5: DẬP MÁY & CHUYỂN STATE_REMOTE_FINDING ĐỂ TASK 3 PUSH FIREBASE
+// TASK 5: DẬP MÁY & CHUYỂN STATE_REMOTE_FINDING ĐỂ TASK 3 LẤY GPS
+// TASK 5: DẬP MÁY & CHUYỂN STATE_REMOTE_FINDING ĐỂ TASK 3 LẤY GPS
 void remote_find_task(void *pvParameters)
 {
     while (1)
     {
         if (xSemaphoreTake(xRemoteWakeSemaphore, portMAX_DELAY) == pdTRUE)
         {
-            ESP_LOGI(TAG, "[TASK 5] Nhận lệnh cập nhật vị trí từ xa (Chế độ âm thầm)...");
+            ESP_LOGI(TAG, "[TASK 5] Nhận lệnh cập nhật vị trí từ xa...");
 
             // 1. Dập cuộc gọi ngắt cước
             if (xSemaphoreTake(xSimMutex, pdMS_TO_TICKS(2000)) == pdTRUE)
@@ -284,38 +276,37 @@ void remote_find_task(void *pvParameters)
                 xSemaphoreGive(xSimMutex);
             }
 
-            vTaskDelay(pdMS_TO_TICKS(1500));
+            // [MỚI]: Cho SIM và nguồn điện nghỉ hẳn 2 giây để ổn định điện áp sau khi ATH
+            ESP_LOGI(TAG, "⏳ Cho SIM nghỉ 2s để ổn định nguồn điện và mạng thoại...");
+            vTaskDelay(pdMS_TO_TICKS(2000));
 
-            // 2. Xóa sạch cờ Push Firebase cũ
+            // Reset cờ Push Firebase cũ
             xSemaphoreTake(xFirebaseDoneSemaphore, 0);
 
-            // Chuyển trạng thái sang STATE_REMOTE_FINDING dành riêng cho tìm xe bãi
+            // 2. Chuyển state để Task 3 bắt đầu bật GPS và chốt vệ tinh
             xSemaphoreTake(xStateMutex, portMAX_DELAY);
             g_system_state = STATE_REMOTE_FINDING;
             xSemaphoreGive(xStateMutex);
 
-            // 4. Đợi Task 3 lấy GPS và gửi lên Firebase (Timeout 50s)
-            ESP_LOGI(TAG, "Đang đợi Task 3 lấy GPS và gửi lên Firebase (Tối đa 50s)...");
-            if (xSemaphoreTake(xFirebaseDoneSemaphore, pdMS_TO_TICKS(50000)) == pdTRUE)
+            // 3. Đợi Task 3 chốt vệ tinh và gửi Firebase (Cho tối đa 60 giây vì Cold Start)
+            ESP_LOGI(TAG, "Đang đợi Task 3 ép GPS khóa vệ tinh và Push Firebase (Tối đa 60s)...");
+            if (xSemaphoreTake(xFirebaseDoneSemaphore, pdMS_TO_TICKS(60000)) == pdTRUE)
             {
-                ESP_LOGI(TAG, "Task 3 đã xác nhận Push Firebase THÀNH CÔNG!");
+                ESP_LOGI(TAG, "Task 3 đã Push Firebase THÀNH CÔNG! Kết thúc chu trình.");
             }
             else
             {
-                ESP_LOGE(TAG, "Timeout 50s! Mạng quá yếu hoặc không lấy được GPS.");
+                ESP_LOGE(TAG, "Timeout 60s! Không bắt được vệ tinh (Có thể đang ở tầng hầm). Bỏ qua!");
             }
 
-            ESP_LOGI(TAG, "Chu kỳ hoàn tất! Đưa hệ thống trở lại giấc ngủ...");
-
-            // [MỚI]: Tắt nguồn GPS trước khi đi ngủ trở lại
+            // Chắc chắn tắt GPS thêm một lần nữa cho an toàn trước khi ngủ
             neo6m_set_power(false);
 
-            // 5. Trả trạng thái về SLEEPING
+            // 4. Đưa hệ thống quay trở lại giấc ngủ
             xSemaphoreTake(xStateMutex, portMAX_DELAY);
             g_system_state = STATE_SLEEPING;
             xSemaphoreGive(xStateMutex);
 
-            // 6. Cho Task 1 đi ngủ tiếp
             xSemaphoreGive(xSleepAgainSemaphore);
         }
     }
@@ -368,7 +359,7 @@ void central_control_task(void *pvParameters)
     }
 }
 
-// TASK 3: THAO TÁC SIM VÀ PUSH FIREBASE (DÙNG NEO-6M LẤY GPS)
+// TASK 3: THAO TÁC SIM VÀ GPS
 void sim_gps_network_task(void *pvParameters)
 {
     char gps_payload[128];
@@ -386,69 +377,108 @@ void sim_gps_network_task(void *pvParameters)
             vTaskDelay(pdMS_TO_TICKS(200));
         }
 
-        // 1. BÃI XE: STATE_REMOTE_FINDING -> PUSH "PARKING_FIND"
+        // =========================================================================
+        // 1. NHÁY MÁY TÌM XE: ÉP BẮT TỌA ĐỘ THẬT -> GỬI 1 LẦN -> TẮT GPS
+        // =========================================================================
         else if (current_state == STATE_REMOTE_FINDING)
         {
-            // [MỚI]: Bật nguồn GPS nếu chưa bật
+            // 1. Bật nguồn GPS
             if (!neo6m_is_powered())
             {
                 neo6m_set_power(true);
             }
 
-            // Đọc tọa độ GPS từ module NEO-6M
-            neo6m_read_gps(&gps_data);
-            double real_lat = gps_data.valid ? (double)gps_data.latitude : 0.0;
-            double real_lng = gps_data.valid ? (double)gps_data.longitude : 0.0;
+            ESP_LOGI(TAG, "🛰️ [PARKING_FIND] Đã BẬT GPS! Đang ép chờ khóa vệ tinh thực tế...");
 
-            xSemaphoreTake(xSimMutex, portMAX_DELAY);
+            neo6m_gps_data_t new_gps = {0};
+            bool fix_ok = false;
+            int wait_sec = 0;
 
-            // Khôi phục 4G nếu bị ngắt sau ATH
-            uart_flush_input(SIM_UART_NUM);
-            uart_write_bytes(SIM_UART_NUM, "AT+NETOPEN?\r\n", 13);
-            memset(net_buf, 0, sizeof(net_buf));
-            int len = uart_read_bytes(SIM_UART_NUM, net_buf, sizeof(net_buf) - 1, pdMS_TO_TICKS(500));
-
-            if (len <= 0 || strstr((char *)net_buf, "+NETOPEN: 1") == NULL)
+            // 2. Vòng lặp chờ bằng được tọa độ có valid == true (Tối đa 55 giây tránh timeout Task 5)
+            while (wait_sec < 55)
             {
-                sim_send_cmd("AT+CGDCONT=1,\"IP\",\"v-internet\"", "OK", 1000);
-                sim_send_cmd("AT+NETOPEN", "OK", 2000);
-                vTaskDelay(pdMS_TO_TICKS(1000));
+                wait_sec++;
+                ESP_LOGI(TAG, "⏳ Đang dò tìm vệ tinh (Cold Start)... (%d giây)", wait_sec);
+
+                if (neo6m_get_latest_fix(&new_gps, 1000) && new_gps.valid)
+                {
+                    fix_ok = true;
+                    g_last_saved_lat = (double)new_gps.latitude;
+                    g_last_saved_lng = (double)new_gps.longitude;
+                    ESP_LOGI(TAG, "🎯 BẮT ĐƯỢC TỌA ĐỘ THẬT: Lat=%.6f, Lng=%.6f", g_last_saved_lat, g_last_saved_lng);
+                    break; // Thoát vòng lặp chờ khi đã có tọa độ chuẩn
+                }
+
+                // Nếu đang chờ mà Task 5 hết timeout ép về SLEEPING thì tự văng ra
+                xSemaphoreTake(xStateMutex, portMAX_DELAY);
+                system_state_t check_state = g_system_state;
+                xSemaphoreGive(xStateMutex);
+                if (check_state != STATE_REMOTE_FINDING)
+                {
+                    break;
+                }
             }
 
-            snprintf(gps_payload, sizeof(gps_payload),
-                     "{\"latitude\":%.6f,\"longitude\":%.6f,\"status\":\"PARKING_FIND\"}",
-                     real_lat, real_lng);
-
-            ESP_LOGI(TAG, "[BÃI XE] Push JSON: %s", gps_payload);
-
-            sim_send_to_firebase(gps_payload);
-            xSemaphoreGive(xSimMutex);
-
-            if (xFirebaseDoneSemaphore != NULL)
+            if (fix_ok)
             {
-                xSemaphoreGive(xFirebaseDoneSemaphore);
+                // 3. Chỉ khi bắt được vệ tinh mới Push lên Firebase
+                xSemaphoreTake(xSimMutex, portMAX_DELAY);
+
+                uart_flush_input(SIM_UART_NUM);
+                uart_write_bytes(SIM_UART_NUM, "AT+NETOPEN?\r\n", 13);
+                memset(net_buf, 0, sizeof(net_buf));
+                int len = uart_read_bytes(SIM_UART_NUM, net_buf, sizeof(net_buf) - 1, pdMS_TO_TICKS(500));
+
+                if (len <= 0 || strstr((char *)net_buf, "+NETOPEN: 1") == NULL)
+                {
+                    sim_send_cmd("AT+CGDCONT=1,\"IP\",\"v-internet\"", "OK", 1000);
+                    sim_send_cmd("AT+NETOPEN", "OK", 2000);
+                    vTaskDelay(pdMS_TO_TICKS(1000));
+                }
+
+                snprintf(gps_payload, sizeof(gps_payload),
+                         "{\"latitude\":%.6f,\"longitude\":%.6f,\"status\":\"PARKING_FIND\"}",
+                         g_last_saved_lat, g_last_saved_lng);
+
+                ESP_LOGI(TAG, "🚀 [PARKING_FIND] Bắn JSON lên Firebase: %s", gps_payload);
+                sim_send_to_firebase(gps_payload);
+                xSemaphoreGive(xSimMutex);
+
+                // 4. Bắn xong 1 phát duy nhất -> LẬP TỨC TẮT GPS TIẾT KIỆM ĐIỆN
+                neo6m_set_power(false);
+                ESP_LOGI(TAG, "🔌 Đã bắn Firebase xong -> TẮT NGUỒN GPS NGAY LẬP TỨC!");
+
+                // Báo cho Task 5 biết đã hoàn thành để nó cho xe ngủ tiếp
+                if (xFirebaseDoneSemaphore != NULL)
+                {
+                    xSemaphoreGive(xFirebaseDoneSemaphore);
+                }
             }
 
-            vTaskDelay(pdMS_TO_TICKS(10000));
+            vTaskDelay(pdMS_TO_TICKS(2000));
         }
 
+        // =========================================================================
         // 2. CHỦ LÁI XE: STATE_OWNER_CONNECTED -> PUSH "OWNER_DRIVING"
+        // =========================================================================
         else if (current_state == STATE_OWNER_CONNECTED)
         {
-            // [MỚI]: Bật nguồn GPS nếu chưa bật
             if (!neo6m_is_powered())
             {
                 neo6m_set_power(true);
             }
 
-            // Đọc tọa độ GPS từ module NEO-6M
-            neo6m_read_gps(&gps_data);
-            double real_lat = gps_data.valid ? (double)gps_data.latitude : 0.0;
-            double real_lng = gps_data.valid ? (double)gps_data.longitude : 0.0;
+            if (neo6m_get_latest_fix(&gps_data, 2000) && gps_data.valid)
+            {
+                g_last_saved_lat = (double)gps_data.latitude;
+                g_last_saved_lng = (double)gps_data.longitude;
+            }
+
+            double real_lat = gps_data.valid ? (double)gps_data.latitude : g_last_saved_lat;
+            double real_lng = gps_data.valid ? (double)gps_data.longitude : g_last_saved_lng;
 
             xSemaphoreTake(xSimMutex, portMAX_DELAY);
 
-            // Khôi phục 4G nếu bị ngắt kết nối
             uart_flush_input(SIM_UART_NUM);
             uart_write_bytes(SIM_UART_NUM, "AT+NETOPEN?\r\n", 13);
             memset(net_buf, 0, sizeof(net_buf));
@@ -473,10 +503,11 @@ void sim_gps_network_task(void *pvParameters)
             vTaskDelay(pdMS_TO_TICKS(5000));
         }
 
+        // =========================================================================
         // 3. TRỘM DẮT XE: STATE_ALARM -> PUSH "THEFT_ALARM"
+        // =========================================================================
         else if (current_state == STATE_ALARM)
         {
-            // [MỚI]: Bật nguồn GPS nếu chưa bật
             if (!neo6m_is_powered())
             {
                 neo6m_set_power(true);
@@ -489,7 +520,6 @@ void sim_gps_network_task(void *pvParameters)
                 ESP_LOGE(TAG, "[TRỘM] GỌI ĐIỆN BÁO ĐỘNG CHO CHỦ XE!");
                 sim_make_call(OWNER_PHONE_NUMBER);
 
-                // Đổ chuông báo động trong 6 giây
                 vTaskDelay(pdMS_TO_TICKS(6000));
 
                 ESP_LOGI(TAG, "[TRỘM] Dập cuộc gọi thoại (ATH) để giải phóng mạng Data...");
@@ -497,7 +527,6 @@ void sim_gps_network_task(void *pvParameters)
                 vTaskDelay(pdMS_TO_TICKS(2000));
             }
 
-            // Khôi phục 4G sau cuộc gọi
             uart_flush_input(SIM_UART_NUM);
             uart_write_bytes(SIM_UART_NUM, "AT+NETOPEN?\r\n", 13);
             memset(net_buf, 0, sizeof(net_buf));
@@ -510,10 +539,14 @@ void sim_gps_network_task(void *pvParameters)
                 vTaskDelay(pdMS_TO_TICKS(1000));
             }
 
-            // Đọc tọa độ GPS từ module NEO-6M
-            neo6m_read_gps(&gps_data);
-            double real_lat = gps_data.valid ? (double)gps_data.latitude : 0.0;
-            double real_lng = gps_data.valid ? (double)gps_data.longitude : 0.0;
+            if (neo6m_get_latest_fix(&gps_data, 2000) && gps_data.valid)
+            {
+                g_last_saved_lat = (double)gps_data.latitude;
+                g_last_saved_lng = (double)gps_data.longitude;
+            }
+
+            double real_lat = gps_data.valid ? (double)gps_data.latitude : g_last_saved_lat;
+            double real_lng = gps_data.valid ? (double)gps_data.longitude : g_last_saved_lng;
 
             snprintf(gps_payload, sizeof(gps_payload),
                      "{\"latitude\":%.6f,\"longitude\":%.6f,\"status\":\"THEFT_ALARM\"}",
