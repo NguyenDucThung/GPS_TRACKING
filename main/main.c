@@ -101,7 +101,6 @@ void power_on_sequence(void)
 
 void app_main(void)
 {
-
     // 1. BẮT BỘC: Khởi tạo NVS Flash cho Bluetooth & PHY Calibration
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND)
@@ -154,8 +153,8 @@ void app_main(void)
     ble_driver_init();
     sim_a7600e_init();
 
-    // Khởi tạo GPS NEO-6M (Cấu hình mặc định UART_NUM_1, RX=6, TX=7)
-    ESP_ERROR_CHECK(neo6m_init_default());
+    // [MỚI]: Khởi tạo GPIO 18 điều khiển Transistor C1815 cấp nguồn GPS (Mặc định ngắt GPS lúc mới lên nguồn)
+    neo6m_power_init();
 
     ESP_LOGI(TAG, "--- HE THONG TASK HOAN THANH ---");
 
@@ -202,6 +201,9 @@ void mpu_monitor_task(void *pvParameters)
                         relay_off();
                         buzzer_off();
                         ble_driver_stop_advertising();
+
+                        // [MỚI]: Tắt triệt để nguồn GPS NEO-6M trước khi đi ngủ
+                        neo6m_set_power(false);
 
                         // Cài đặt báo thức Timer 3 giây cho giấc ngủ Light Sleep
                         esp_sleep_enable_timer_wakeup(3 * 1000000ULL);
@@ -292,7 +294,7 @@ void remote_find_task(void *pvParameters)
             g_system_state = STATE_REMOTE_FINDING;
             xSemaphoreGive(xStateMutex);
 
-            // 4. Đợi Task 3 push Firebase xong (Timeout 50s)
+            // 4. Đợi Task 3 lấy GPS và gửi lên Firebase (Timeout 50s)
             ESP_LOGI(TAG, "Đang đợi Task 3 lấy GPS và gửi lên Firebase (Tối đa 50s)...");
             if (xSemaphoreTake(xFirebaseDoneSemaphore, pdMS_TO_TICKS(50000)) == pdTRUE)
             {
@@ -303,7 +305,10 @@ void remote_find_task(void *pvParameters)
                 ESP_LOGE(TAG, "Timeout 50s! Mạng quá yếu hoặc không lấy được GPS.");
             }
 
-            ESP_LOGI(TAG, " Chu kỳ hoàn tất! Đưa hệ thống trở lại giấc ngủ...");
+            ESP_LOGI(TAG, "Chu kỳ hoàn tất! Đưa hệ thống trở lại giấc ngủ...");
+
+            // [MỚI]: Tắt nguồn GPS trước khi đi ngủ trở lại
+            neo6m_set_power(false);
 
             // 5. Trả trạng thái về SLEEPING
             xSemaphoreTake(xStateMutex, portMAX_DELAY);
@@ -384,6 +389,12 @@ void sim_gps_network_task(void *pvParameters)
         // 1. BÃI XE: STATE_REMOTE_FINDING -> PUSH "PARKING_FIND"
         else if (current_state == STATE_REMOTE_FINDING)
         {
+            // [MỚI]: Bật nguồn GPS nếu chưa bật
+            if (!neo6m_is_powered())
+            {
+                neo6m_set_power(true);
+            }
+
             // Đọc tọa độ GPS từ module NEO-6M
             neo6m_read_gps(&gps_data);
             double real_lat = gps_data.valid ? (double)gps_data.latitude : 0.0;
@@ -424,6 +435,12 @@ void sim_gps_network_task(void *pvParameters)
         // 2. CHỦ LÁI XE: STATE_OWNER_CONNECTED -> PUSH "OWNER_DRIVING"
         else if (current_state == STATE_OWNER_CONNECTED)
         {
+            // [MỚI]: Bật nguồn GPS nếu chưa bật
+            if (!neo6m_is_powered())
+            {
+                neo6m_set_power(true);
+            }
+
             // Đọc tọa độ GPS từ module NEO-6M
             neo6m_read_gps(&gps_data);
             double real_lat = gps_data.valid ? (double)gps_data.latitude : 0.0;
@@ -459,6 +476,12 @@ void sim_gps_network_task(void *pvParameters)
         // 3. TRỘM DẮT XE: STATE_ALARM -> PUSH "THEFT_ALARM"
         else if (current_state == STATE_ALARM)
         {
+            // [MỚI]: Bật nguồn GPS nếu chưa bật
+            if (!neo6m_is_powered())
+            {
+                neo6m_set_power(true);
+            }
+
             xSemaphoreTake(xSimMutex, portMAX_DELAY);
 
             if (xSemaphoreTake(xCallSemaphore, 0) == pdTRUE)
