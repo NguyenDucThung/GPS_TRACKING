@@ -9,6 +9,7 @@
 #include "driver/gpio.h"
 #include "driver/i2c.h"
 #include "driver/uart.h"
+#include "nvs_flash.h"
 
 // CẤU HÌNH SỐ ĐIỆN THOẠI
 #define OWNER_PHONE_NUMBER "0854383970"
@@ -17,6 +18,7 @@
 // Include các driver độc lập từ thư mục components
 #include "mpu6050.h"
 #include "sim_a7600e.h"
+#include "neo6m.h"
 #include "ble_driver.h"
 #include "buzzer.h"
 #include "relay.h"
@@ -99,6 +101,16 @@ void power_on_sequence(void)
 
 void app_main(void)
 {
+
+    // 1. BẮT BỘC: Khởi tạo NVS Flash cho Bluetooth & PHY Calibration
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND)
+    {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
+
     // 1. Khởi tạo cơ chế RTOS
     xStateMutex = xSemaphoreCreateMutex();
     xSimMutex = xSemaphoreCreateMutex();
@@ -136,12 +148,14 @@ void app_main(void)
     // Bật tính năng thức giấc bằng GPIO cho MPU6050
     esp_sleep_enable_gpio_wakeup();
 
-    // 3. THỰC THI CHU TRÌNH CẤP NGUỒN VÀ KHỞI ĐỘNG DRIVER UART
+    // 3. THỰC THI CHU TRÌNH CẤP NGUỒN VÀ KHỞI ĐỘNG DRIVER PHẦN CỨNG
     power_on_sequence();
     mpu6050_init();
     ble_driver_init();
     sim_a7600e_init();
-    sim_gps_enable(); // Kích hoạt nguồn GPS phần cứng
+
+    // Khởi tạo GPS NEO-6M (Cấu hình mặc định UART_NUM_1, RX=6, TX=7)
+    ESP_ERROR_CHECK(neo6m_init_default());
 
     ESP_LOGI(TAG, "--- HE THONG TASK HOAN THANH ---");
 
@@ -278,8 +292,8 @@ void remote_find_task(void *pvParameters)
             g_system_state = STATE_REMOTE_FINDING;
             xSemaphoreGive(xStateMutex);
 
-            // 4. Đợi Task 3 push Firebase xong (Timeout 40s)
-            ESP_LOGI(TAG, "Đang đợi Task 3 lấy GPS và gửi lên Firebase (Tối đa 40s)...");
+            // 4. Đợi Task 3 push Firebase xong (Timeout 50s)
+            ESP_LOGI(TAG, "Đang đợi Task 3 lấy GPS và gửi lên Firebase (Tối đa 50s)...");
             if (xSemaphoreTake(xFirebaseDoneSemaphore, pdMS_TO_TICKS(50000)) == pdTRUE)
             {
                 ESP_LOGI(TAG, "Task 3 đã xác nhận Push Firebase THÀNH CÔNG!");
@@ -349,11 +363,12 @@ void central_control_task(void *pvParameters)
     }
 }
 
-// TASK 3: THAO TÁC SIM
+// TASK 3: THAO TÁC SIM VÀ PUSH FIREBASE (DÙNG NEO-6M LẤY GPS)
 void sim_gps_network_task(void *pvParameters)
 {
     char gps_payload[128];
     uint8_t net_buf[64];
+    neo6m_gps_data_t gps_data = {0};
 
     while (1)
     {
@@ -369,6 +384,11 @@ void sim_gps_network_task(void *pvParameters)
         // 1. BÃI XE: STATE_REMOTE_FINDING -> PUSH "PARKING_FIND"
         else if (current_state == STATE_REMOTE_FINDING)
         {
+            // Đọc tọa độ GPS từ module NEO-6M
+            neo6m_read_gps(&gps_data);
+            double real_lat = gps_data.valid ? (double)gps_data.latitude : 0.0;
+            double real_lng = gps_data.valid ? (double)gps_data.longitude : 0.0;
+
             xSemaphoreTake(xSimMutex, portMAX_DELAY);
 
             // Khôi phục 4G nếu bị ngắt sau ATH
@@ -384,29 +404,12 @@ void sim_gps_network_task(void *pvParameters)
                 vTaskDelay(pdMS_TO_TICKS(1000));
             }
 
-            // Đọc tọa độ GPS thật từ phần cứng A7600E
-            sim_gps_get_info();
-            char *gps_str = sim_get_gps_location();
-            double real_lat = 0.0, real_lng = 0.0;
-
-            if (gps_str != NULL)
-            {
-                char *lat_ptr = strstr(gps_str, "\"latitude\":");
-                char *lng_ptr = strstr(gps_str, "\"longitude\":");
-                if (lat_ptr && lng_ptr)
-                {
-                    sscanf(lat_ptr, "\"latitude\":%lf", &real_lat);
-                    sscanf(lng_ptr, "\"longitude\":%lf", &real_lng);
-                }
-            }
-
             snprintf(gps_payload, sizeof(gps_payload),
                      "{\"latitude\":%.6f,\"longitude\":%.6f,\"status\":\"PARKING_FIND\"}",
                      real_lat, real_lng);
 
             ESP_LOGI(TAG, "[BÃI XE] Push JSON: %s", gps_payload);
 
-            // TRUYỀN ĐÚNG BIẾN gps_payload VÀO HÀM PUSH
             sim_send_to_firebase(gps_payload);
             xSemaphoreGive(xSimMutex);
 
@@ -419,9 +422,13 @@ void sim_gps_network_task(void *pvParameters)
         }
 
         // 2. CHỦ LÁI XE: STATE_OWNER_CONNECTED -> PUSH "OWNER_DRIVING"
-
         else if (current_state == STATE_OWNER_CONNECTED)
         {
+            // Đọc tọa độ GPS từ module NEO-6M
+            neo6m_read_gps(&gps_data);
+            double real_lat = gps_data.valid ? (double)gps_data.latitude : 0.0;
+            double real_lng = gps_data.valid ? (double)gps_data.longitude : 0.0;
+
             xSemaphoreTake(xSimMutex, portMAX_DELAY);
 
             // Khôi phục 4G nếu bị ngắt kết nối
@@ -435,22 +442,6 @@ void sim_gps_network_task(void *pvParameters)
                 sim_send_cmd("AT+CGDCONT=1,\"IP\",\"v-internet\"", "OK", 1000);
                 sim_send_cmd("AT+NETOPEN", "OK", 2000);
                 vTaskDelay(pdMS_TO_TICKS(1000));
-            }
-
-            // Đọc tọa độ GPS thật từ phần cứng A7600E
-            sim_gps_get_info();
-            char *gps_str = sim_get_gps_location();
-            double real_lat = 0.0, real_lng = 0.0;
-
-            if (gps_str != NULL)
-            {
-                char *lat_ptr = strstr(gps_str, "\"latitude\":");
-                char *lng_ptr = strstr(gps_str, "\"longitude\":");
-                if (lat_ptr && lng_ptr)
-                {
-                    sscanf(lat_ptr, "\"latitude\":%lf", &real_lat);
-                    sscanf(lng_ptr, "\"longitude\":%lf", &real_lng);
-                }
             }
 
             snprintf(gps_payload, sizeof(gps_payload),
@@ -470,7 +461,6 @@ void sim_gps_network_task(void *pvParameters)
         {
             xSemaphoreTake(xSimMutex, portMAX_DELAY);
 
-            // 🔥 SỬA LỖI: Thực hiện cuộc gọi xong BẮT BỘC dập máy (ATH) và ngắt chuông
             if (xSemaphoreTake(xCallSemaphore, 0) == pdTRUE)
             {
                 ESP_LOGE(TAG, "[TRỘM] GỌI ĐIỆN BÁO ĐỘNG CHO CHỦ XE!");
@@ -480,8 +470,8 @@ void sim_gps_network_task(void *pvParameters)
                 vTaskDelay(pdMS_TO_TICKS(6000));
 
                 ESP_LOGI(TAG, "[TRỘM] Dập cuộc gọi thoại (ATH) để giải phóng mạng Data...");
-                sim_hang_up();                   // Gửi lệnh ATH ngắt cuộc gọi
-                vTaskDelay(pdMS_TO_TICKS(2000)); // Chờ SIM bám lại mạng 4G
+                sim_hang_up();
+                vTaskDelay(pdMS_TO_TICKS(2000));
             }
 
             // Khôi phục 4G sau cuộc gọi
@@ -497,21 +487,10 @@ void sim_gps_network_task(void *pvParameters)
                 vTaskDelay(pdMS_TO_TICKS(1000));
             }
 
-            // Đọc tọa độ GPS thật từ phần cứng A7600E
-            sim_gps_get_info();
-            char *gps_str = sim_get_gps_location();
-            double real_lat = 0.0, real_lng = 0.0;
-
-            if (gps_str != NULL)
-            {
-                char *lat_ptr = strstr(gps_str, "\"latitude\":");
-                char *lng_ptr = strstr(gps_str, "\"longitude\":");
-                if (lat_ptr && lng_ptr)
-                {
-                    sscanf(lat_ptr, "\"latitude\":%lf", &real_lat);
-                    sscanf(lng_ptr, "\"longitude\":%lf", &real_lng);
-                }
-            }
+            // Đọc tọa độ GPS từ module NEO-6M
+            neo6m_read_gps(&gps_data);
+            double real_lat = gps_data.valid ? (double)gps_data.latitude : 0.0;
+            double real_lng = gps_data.valid ? (double)gps_data.longitude : 0.0;
 
             snprintf(gps_payload, sizeof(gps_payload),
                      "{\"latitude\":%.6f,\"longitude\":%.6f,\"status\":\"THEFT_ALARM\"}",
