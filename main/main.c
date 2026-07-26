@@ -8,7 +8,7 @@
 #include "esp_sleep.h"
 #include "driver/gpio.h"
 #include "driver/i2c.h"
-#include "driver/uart.h"
+#include "driver/uart.h" 
 #include "nvs_flash.h"
 
 // CẤU HÌNH SỐ ĐIỆN THOẠI NGƯỜI THÂN / CHỦ XE
