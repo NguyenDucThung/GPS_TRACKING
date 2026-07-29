@@ -12,13 +12,13 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 
-// CẤU HÌNH CỔNG UART & SỐ ĐIỆN THOẠI MẶC ĐỊNH
-#define SIM_UART_NUM UART_NUM_1 // SIM A7600E chạy trên UART 1
-#define DEFAULT_OWNER_PHONE "0854383970"
-#define DEFAULT_RELATIVE_PHONE "0854383970"
+
+#define SIM_UART_NUM UART_NUM_1 
+#define DEFAULT_OWNER_PHONE "xxxxxxxxxx"
+#define DEFAULT_RELATIVE_PHONE "xxxxxxxxxx"
 #define SIM_SLEEP_PIN 3 // Chân điều khiển PWR SIM
 
-// Include các driver độc lập từ thư mục components
+
 #include "mpu6050.h"
 #include "sim_a7600e.h"
 #include "neo6m.h"
@@ -50,11 +50,11 @@ SemaphoreHandle_t xRemoteWakeSemaphore;
 SemaphoreHandle_t xSleepAgainSemaphore;
 SemaphoreHandle_t xFirebaseDoneSemaphore;
 
-// LƯU TRỮ 2 SỐ ĐIỆN THOẠI RIÊNG BIỆT TRONG RAM / FLASH NVS
-static char g_owner_phone[16] = DEFAULT_OWNER_PHONE;       // SĐT Chủ xe (Trộm)
-static char g_relative_phone[16] = DEFAULT_RELATIVE_PHONE; // SĐT Người thân (Tai nạn)
 
-// VỊ TRÍ LƯU TRỮ DỰ PHÒNG TOÀN CỤC
+static char g_owner_phone[16] = DEFAULT_OWNER_PHONE;       // SĐT Chủ xe 
+static char g_relative_phone[16] = DEFAULT_RELATIVE_PHONE; // SĐT Người thân 
+
+
 static double g_last_saved_lat = 0.0;
 static double g_last_saved_lng = 0.0;
 
@@ -66,10 +66,8 @@ void ble_auth_task(void *pvParameters);
 void remote_find_task(void *pvParameters);
 void fall_detect_task(void *pvParameters);
 
-// =========================================================================
-// HÀM QUẢN LÝ BỘ NHỚ FLASH NVS CHO 2 SỐ ĐIỆN THOẠI
-// =========================================================================
 
+// HÀM QUẢN LÝ BỘ NHỚ FLASH NVS 
 void save_phones_to_nvs(const char *owner, const char *relative)
 {
     nvs_handle_t my_handle;
@@ -79,7 +77,7 @@ void save_phones_to_nvs(const char *owner, const char *relative)
         nvs_set_str(my_handle, "rel_phone", relative);
         nvs_commit(my_handle);
         nvs_close(my_handle);
-        ESP_LOGI(TAG, "💾 Đã lưu SĐT mới vào Flash: Chủ xe=%s | Người thân=%s", owner, relative);
+        ESP_LOGI(TAG, "Đã lưu SĐT vào Flash: Chủ xe=%s | Người thân=%s", owner, relative);
     }
 }
 
@@ -89,7 +87,7 @@ void load_phones_from_nvs(void)
     if (nvs_open("storage", NVS_READONLY, &my_handle) == ESP_OK)
     {
         size_t size_own = sizeof(g_owner_phone);
-        size_t size_rel = sizeof(g_relative_phone); // [ĐÃ SỬA] Thêm size_t ở đây
+        size_t size_rel = sizeof(g_relative_phone); 
 
         nvs_get_str(my_handle, "own_phone", g_owner_phone, &size_own);
         nvs_get_str(my_handle, "rel_phone", g_relative_phone, &size_rel);
@@ -98,9 +96,8 @@ void load_phones_from_nvs(void)
         nvs_close(my_handle);
     }
 }
-// =========================================================================
-// HÀM ĐỒNG BỘ SĐT ĐÚNG 1 LẦN DUY NHẤT LÚC MỚI CẤP NGUỒN (AN TOÀN CHỐNG RESET)
-// =========================================================================
+
+// HÀM ĐỒNG BỘ SĐT 
 
 static bool sim_fetch_single_node(const char *node_name, char *out_phone, size_t max_len)
 {
@@ -178,13 +175,13 @@ static bool sim_fetch_single_node(const char *node_name, char *out_phone, size_t
 
 void sim_boot_sync_phones_from_firebase(void)
 {
-    ESP_LOGI(TAG, "🔌 [BOOT SYNC] Bắt đầu kiểm tra sóng 4G để lấy SĐT mới từ Firebase...");
+    ESP_LOGI(TAG, "Bắt đầu kiểm tra sóng 4G ...");
 
-    // 1. Chờ SIM đăng ký mạng 4G (+CGATT: 1)
+    // 1. Chờ SIM đăng ký mạng 4G 
     bool network_ready = false;
     uint8_t net_buf[64] = {0};
 
-    for (int i = 0; i < 12; i++) // Đợi tối đa 12s
+    for (int i = 0; i < 12; i++) // Đợi  12s
     {
         uart_flush_input(SIM_UART_NUM);
         uart_write_bytes(SIM_UART_NUM, "AT+CGATT?\r\n", 11);
@@ -194,7 +191,7 @@ void sim_boot_sync_phones_from_firebase(void)
         if (len > 0 && strstr((char *)net_buf, "+CGATT: 1") != NULL)
         {
             network_ready = true;
-            ESP_LOGI(TAG, "✅ SIM đã bám mạng 4G thành công!");
+            ESP_LOGI(TAG, "SIM đã bat mạng 4G thành công!");
             break;
         }
         vTaskDelay(pdMS_TO_TICKS(1000));
@@ -202,7 +199,7 @@ void sim_boot_sync_phones_from_firebase(void)
 
     if (!network_ready)
     {
-        ESP_LOGE(TAG, "⚠️ SIM chưa có sóng 4G lúc Boot! Giữ nguyên SĐT cũ trong Flash NVS.");
+        ESP_LOGE(TAG, "SIM chưa có sóng 4G lúc Boot.");
         return;
     }
 
@@ -211,12 +208,12 @@ void sim_boot_sync_phones_from_firebase(void)
     sim_send_cmd("AT+NETOPEN", "OK", 2000);
     vTaskDelay(pdMS_TO_TICKS(1000));
 
-    // 3. Kéo SĐT từ Firebase (Có trễ 1s giữa 2 lượt gọi để chống sụt nguồn)
+    // 3. Kéo SĐT từ Firebase 
     char fetched_owner[16] = {0};
     char fetched_rel[16] = {0};
 
     bool own_ok = sim_fetch_single_node("owner_phone", fetched_owner, sizeof(fetched_owner));
-    vTaskDelay(pdMS_TO_TICKS(1000)); // Trễ 1 giây phục hồi điện áp
+    vTaskDelay(pdMS_TO_TICKS(1000)); 
 
     bool rel_ok = sim_fetch_single_node("relative_phone", fetched_rel, sizeof(fetched_rel));
     vTaskDelay(pdMS_TO_TICKS(1000));
@@ -226,14 +223,14 @@ void sim_boot_sync_phones_from_firebase(void)
 
     if (own_ok && strlen(fetched_owner) >= 9 && strcmp(g_owner_phone, fetched_owner) != 0)
     {
-        ESP_LOGI(TAG, "🔄 Cập nhật SĐT CHỦ XE từ Firebase: %s -> %s", g_owner_phone, fetched_owner);
+        ESP_LOGI(TAG, "Cập nhật SĐT CHỦ XE từ Firebase: %s -> %s", g_owner_phone, fetched_owner);
         snprintf(g_owner_phone, sizeof(g_owner_phone), "%s", fetched_owner);
         is_updated = true;
     }
 
     if (rel_ok && strlen(fetched_rel) >= 9 && strcmp(g_relative_phone, fetched_rel) != 0)
     {
-        ESP_LOGI(TAG, "🔄 Cập nhật SĐT NGƯỜI THÂN từ Firebase: %s -> %s", g_relative_phone, fetched_rel);
+        ESP_LOGI(TAG, "Cập nhật SĐT NGƯỜI THÂN từ Firebase: %s -> %s", g_relative_phone, fetched_rel);
         snprintf(g_relative_phone, sizeof(g_relative_phone), "%s", fetched_rel);
         is_updated = true;
     }
@@ -243,7 +240,7 @@ void sim_boot_sync_phones_from_firebase(void)
         save_phones_to_nvs(g_owner_phone, g_relative_phone);
     }
 
-    ESP_LOGI(TAG, "🔒 [BOOT SYNC COMPLETE] Khóa đồng bộ SĐT. Trong suốt quá trình hoạt động không đồng bộ nữa!");
+    ESP_LOGI(TAG, "Khóa đồng bộ SĐT!");
 }
 
 // HÀM TIẾP NHẬN TÍN HIỆU XÁC THỰC THÀNH CÔNG TỪ BLE
@@ -275,7 +272,7 @@ void sim_send_sms(const char *phone_number, const char *message)
     uart_write_bytes(SIM_UART_NUM, (const char *)&ctrl_z, 1);
     vTaskDelay(pdMS_TO_TICKS(3000));
 
-    ESP_LOGI(TAG, "✉️ Đã gửi tin nhắn SMS vị trí tới số: %s", phone_number);
+    ESP_LOGI(TAG, "Đã gửi tin nhắn SMS: %s", phone_number);
 }
 
 // HÀM ỔN ĐỊNH UART CHO SIM SAU KHI THỨC GIẤC
@@ -296,17 +293,17 @@ void sim_stabilize_uart(void)
 // CHU TRÌNH CẤP NGUỒN SIM
 void power_on_sequence(void)
 {
-    ESP_LOGI(TAG, "===== KHỞI ĐỘNG CHU TRÌNH KÍCH NGUỒN MODULE SIM =====");
+    ESP_LOGI(TAG, "KHỞI ĐỘNG KÍCH NGUỒN MODULE SIM");
 
     gpio_set_level(SIM_SLEEP_PIN, 0);
     vTaskDelay(pdMS_TO_TICKS(500));
 
-    ESP_LOGI(TAG, "-> Chân PWR (GPIO%d) lên HIGH (Giữ 3s)...", SIM_SLEEP_PIN);
+    ESP_LOGI(TAG, "-> Chân PWR lên HIGH (Giữ 3s)...", SIM_SLEEP_PIN);
     gpio_set_level(SIM_SLEEP_PIN, 1);
     vTaskDelay(pdMS_TO_TICKS(3000));
 
     gpio_set_level(SIM_SLEEP_PIN, 0);
-    ESP_LOGI(TAG, "-> Đã thả chân PWR về LOW. Chờ SIM bám mạng ổn định trong 5s...");
+    ESP_LOGI(TAG, "-> Đã thả chân PWR về LOW SIM bám mạng ổn định trong 5s...");
     vTaskDelay(pdMS_TO_TICKS(5000));
 }
 
@@ -360,17 +357,17 @@ void app_main(void)
     ble_driver_init();
     sim_a7600e_init(); // Khởi tạo SIM trên UART 1
 
-    // =========================================================================
-    // 🚀 ĐỒNG BỘ SĐT ĐÚNG 1 LẦN DUY NHẤT LÚC CẮM PIN / MỚI MỞ NGUỒN
-    // =========================================================================
+  
+    // ĐỒNG BỘ SĐT 
+  
     xSemaphoreTake(xSimMutex, portMAX_DELAY);
     sim_boot_sync_phones_from_firebase();
     xSemaphoreGive(xSimMutex);
 
-    // Khởi tạo GPS NEO-6M trên UART_NUM_0 (Bật 24/24)
+    // Khởi tạo GPS NEO-6M trên UART_NUM_0 
     ESP_ERROR_CHECK(neo6m_init_default());
 
-    ESP_LOGI(TAG, "--- HE THONG TASK HOAN THANH ---");
+    ESP_LOGI(TAG, " HE THONG TASK HOAN THANH");
 
     // Tạo các Task hệ thống
     xTaskCreate(remote_find_task, "Find_Task", 4096, NULL, 5, NULL);
@@ -438,7 +435,7 @@ void mpu_monitor_task(void *pvParameters)
                             cpas_buf[len] = '\0';
                             if (strstr((char *)cpas_buf, "+CPAS: 3") != NULL || strstr((char *)cpas_buf, "RING") != NULL)
                             {
-                                ESP_LOGW(TAG, "[CALL DETECTED] Phát hiện nháy máy tìm xe! Kích hoạt Task 5...");
+                                ESP_LOGW(TAG, "Phát hiện nháy máy tìm xe! Kích hoạt Task 5...");
 
                                 xSemaphoreGive(xRemoteWakeSemaphore);
                                 xSemaphoreTake(xSleepAgainSemaphore, portMAX_DELAY);
@@ -493,7 +490,7 @@ void fall_detect_task(void *pvParameters)
             {
                 if (!fall_alert_sent)
                 {
-                    ESP_LOGW(TAG, "⚠️ Phát hiện xe nghiêng ngã (Pitch: %.2f°)! Đếm ngược 20s xác nhận...", pitch);
+                    ESP_LOGW(TAG, "Phát hiện xe nghiêng ngã (Pitch: %.2f°)! Đếm ngược 20s xác nhận...", pitch);
 
                     bool still_fallen = true;
 
@@ -507,7 +504,7 @@ void fall_detect_task(void *pvParameters)
                             if (fabs(pitch) < 20.0)
                             {
                                 still_fallen = false;
-                                ESP_LOGI(TAG, "✅ Xe đã được dựng dậy (Pitch: %.2f°)! HỦY BÁO ĐỘNG GIẢ.", pitch);
+                                ESP_LOGI(TAG, "Xe đã được dựng dậy (Pitch: %.2f°)! HỦY BÁO ĐỘNG GIẢ.", pitch);
                                 break;
                             }
                         }
@@ -515,7 +512,7 @@ void fall_detect_task(void *pvParameters)
 
                     if (still_fallen)
                     {
-                        ESP_LOGE(TAG, "🚨 [XÁC NHẬN TAI NẠN] Gửi SMS và gọi điện cho SĐT NGƯỜI THÂN: %s", g_relative_phone);
+                        ESP_LOGE(TAG, "Gửi SMS và gọi điện cho SĐT NGƯỜI THÂN: %s", g_relative_phone);
 
                         if (xSemaphoreTake(xSimMutex, pdMS_TO_TICKS(5000)) == pdTRUE)
                         {
@@ -532,7 +529,7 @@ void fall_detect_task(void *pvParameters)
                             sim_send_sms(g_relative_phone, sms_msg);
                             vTaskDelay(pdMS_TO_TICKS(1000));
 
-                            ESP_LOGE(TAG, "📞 Đang gọi điện báo động cứu hộ tới NGƯỜI THÂN: %s", g_relative_phone);
+                            ESP_LOGE(TAG, "Đang gọi điện báo động cứu hộ tới NGƯỜI THÂN: %s", g_relative_phone);
                             sim_make_call(g_relative_phone);
                             vTaskDelay(pdMS_TO_TICKS(8000));
                             sim_hang_up();
@@ -643,7 +640,7 @@ void central_control_task(void *pvParameters)
     }
 }
 
-// TASK 3: QUẢN LÝ ĐẨY FIREBASE (THUẦN PUSH GPS - KHÔNG DỒN ĐỒNG BỘ NGHẦM CAO TẢI)
+// TASK 3: QUẢN LÝ ĐẨY FIREBASE 
 void sim_gps_network_task(void *pvParameters)
 {
     char gps_payload[128];
@@ -690,7 +687,7 @@ void sim_gps_network_task(void *pvParameters)
                      "{\"latitude\":%.6f,\"longitude\":%.6f,\"status\":\"PARKING_FIND\"}",
                      real_lat, real_lng);
 
-            ESP_LOGI(TAG, "🚀 [TÌM XE] Bắn JSON lên Firebase: %s", gps_payload);
+            ESP_LOGI(TAG, "Push JSON lên Firebase: %s", gps_payload);
 
             sim_send_to_firebase(gps_payload);
             xSemaphoreGive(xSimMutex);
@@ -733,7 +730,7 @@ void sim_gps_network_task(void *pvParameters)
                      "{\"latitude\":%.6f,\"longitude\":%.6f,\"status\":\"OWNER_DRIVING\"}",
                      real_lat, real_lng);
 
-            ESP_LOGI(TAG, "🏍️ [CHỦ XE LÁI] Push JSON: %s", gps_payload);
+            ESP_LOGI(TAG, "Push JSON: %s", gps_payload);
 
             sim_send_to_firebase(gps_payload);
             xSemaphoreGive(xSimMutex);
@@ -746,7 +743,7 @@ void sim_gps_network_task(void *pvParameters)
 
             if (xSemaphoreTake(xCallSemaphore, 0) == pdTRUE)
             {
-                ESP_LOGE(TAG, "[TRỘM] GỌI ĐIỆN BÁO ĐỘNG BẢO VỆ XE CHO CHỦ XE (%s)!", g_owner_phone);
+                ESP_LOGE(TAG, "GỌI ĐIỆN BÁO ĐỘNG BẢO VỆ XE CHO CHỦ XE (%s)!", g_owner_phone);
                 sim_make_call(g_owner_phone);
 
                 vTaskDelay(pdMS_TO_TICKS(6000));
@@ -782,7 +779,7 @@ void sim_gps_network_task(void *pvParameters)
                      "{\"latitude\":%.6f,\"longitude\":%.6f,\"status\":\"THEFT_ALARM\"}",
                      real_lat, real_lng);
 
-            ESP_LOGE(TAG, "🚨 [TRỘM DẮT XE] Push JSON: %s", gps_payload);
+            ESP_LOGE(TAG, "Push JSON: %s", gps_payload);
 
             sim_send_to_firebase(gps_payload);
             xSemaphoreGive(xSimMutex);

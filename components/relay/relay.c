@@ -36,7 +36,7 @@ void relay_off(void) {
     ESP_LOGD(TAG, "Relay -> OFF");
 }
 
-// Hàm đảo trạng thái Relay (Đang bật thành tắt, đang tắt thành bật)
+// Hàm đảo trạng thái Relay
 void relay_toggle(void) {
     if (relay_state) {
         relay_off();

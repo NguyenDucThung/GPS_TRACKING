@@ -7,7 +7,7 @@
 
 static const char *TAG = "MPU6050_DRIVER";
 
-// --- CÁC HÀM TRỢ GIÚP NỘI BỘ (STATIC) ---
+
 static esp_err_t i2c_master_init(void)
 {
     i2c_config_t conf = {
@@ -33,7 +33,7 @@ static esp_err_t mpu6050_read_bytes(uint8_t start_reg, uint8_t *buffer, size_t l
     return i2c_master_write_read_device(I2C_MASTER_NUM, MPU6050_ADDR, &start_reg, 1, buffer, len, pdMS_TO_TICKS(1000));
 }
 
-// --- TRIỂN KHAI CÁC HÀM CÔNG KHAI ---
+
 
 esp_err_t mpu6050_init(void)
 {
@@ -46,10 +46,10 @@ esp_err_t mpu6050_init(void)
     vTaskDelay(pdMS_TO_TICKS(10));
 
     mpu6050_write_reg(MPU6050_ACCEL_CONFIG, 0x01);
-    mpu6050_write_reg(MPU6050_MOT_THR, 10); // Ngưỡng nhạy ngắt chuyển động
+    mpu6050_write_reg(MPU6050_MOT_THR, 10); 
     mpu6050_write_reg(MPU6050_MOT_DUR, 1);
 
-    // Chân INT phát dạng xung (Pulse) rồi tự hạ về 0V
+    // Chân INT phát dạng xung 
     mpu6050_write_reg(MPU6050_INT_PIN_CFG, 0x00);
     mpu6050_write_reg(MPU6050_INT_ENABLE, 0x40);
 
