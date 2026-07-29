@@ -3,10 +3,10 @@
 #include "esp_err.h"
 #include "driver/gpio.h"
 
-// --- CẤU HÌNH PHẦN CỨNG (Sửa chân ở đây nếu thay đổi mạch) ---
+
 #define I2C_MASTER_SCL_IO     9
 #define I2C_MASTER_SDA_IO     8
-#define WAKEUP_GPIO_PIN       GPIO_NUM_2  // Chân INT của MPU6050 nối vào đây
+#define WAKEUP_GPIO_PIN       GPIO_NUM_2  
 
 #define I2C_MASTER_NUM        I2C_NUM_0
 #define I2C_MASTER_FREQ_HZ    400000
@@ -22,9 +22,9 @@
 #define MPU6050_MOT_DUR       0x20
 #define MPU6050_ACCEL_CONFIG  0x1C
 
-// --- CÁC HÀM CÔNG KHAI ---
+
 /**
- * @brief Khởi tạo ngoại vi I2C và cấu hình ngắt phát hiện chuyển động trên MPU6050
+ * @brief 
  * @return ESP_OK nếu thành công
  */
 esp_err_t mpu6050_init(void);
@@ -37,6 +37,6 @@ esp_err_t mpu6050_init(void);
 esp_err_t mpu6050_get_pitch(float *pitch);
 
 /**
- * @brief Đọc xóa cờ ngắt trên thanh ghi 0x3A (Bắt buộc gọi trước khi ngủ để xóa ngắt cũ)
+ * @brief Đọc xóa cờ ngắt trên thanh ghi 0x3A 
  */
 void mpu6050_clear_interrupt(void);

@@ -7,7 +7,7 @@
 
 static const char *TAG = "SIM_A7600E";
 
-// Hàm kích nguồn cứng (Cấu trúc xung chuẩn cho mạch đệm Transistor)
+// Hàm kích nguồn cứng 
 void sim_a7600e_power_on(void)
 {
     gpio_config_t io_conf = {

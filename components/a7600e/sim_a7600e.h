@@ -9,7 +9,7 @@
 #define SIM_UART_NUM UART_NUM_1
 #define SIM_TX_PIN GPIO_NUM_4  // ESP TX -> SIM RX
 #define SIM_RX_PIN GPIO_NUM_5  // ESP RX -> SIM TX
-#define SIM_PWR_PIN GPIO_NUM_3 // Chân điều khiển nguồn PWRKEY (An toàn)
+#define SIM_PWR_PIN GPIO_NUM_3 // Chân điều khiển nguồn PWRKEY 
 #define BUF_SIZE 1024
 
 #define FIREBASE_URL "https://gps-tracking-a01d3-default-rtdb.asia-southeast1.firebasedatabase.app/vehicle.json?x-http-method-override=PATCH"

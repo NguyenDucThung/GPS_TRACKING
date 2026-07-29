@@ -4,7 +4,7 @@
 #include "esp_err.h"
 #include "driver/uart.h"
 
-// Dùng UART_NUM_1 để không đụng hàng với UART_NUM_0 (Log Console)
+
 #define CONFIG_NEO6M_UART_PORT   UART_NUM_0 
 #define CONFIG_NEO6M_TX_PIN      7
 #define CONFIG_NEO6M_RX_PIN      6
@@ -19,7 +19,7 @@ typedef struct {
     bool valid;
 } neo6m_gps_data_t;
 
-// Khai báo các hàm Driver rút gọn
+// Khai báo các hàm Driver
 esp_err_t neo6m_init(uart_port_t uart_num, int tx_pin, int rx_pin, int baud_rate);
 esp_err_t neo6m_init_default(void);
 bool neo6m_read_gps(neo6m_gps_data_t *out_data);
