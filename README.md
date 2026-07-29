@@ -1,5 +1,8 @@
-ĐÂY LÀ ĐỀ TÀI QUẢN LÝ PHƯƠNG TIỆN CÁ NHÂN ( XE MÁY) THEO THỜI GIAN THỰC
-CHỨC NĂNG CHÍNH:
+ĐÂY LÀ ĐỀ TÀI QUẢN LÝ PHƯƠNG TIỆN CÁ NHÂN ( XE MÁY) THEO THỜI GIAN THỰC  
+Các linh kiện: A7600E, GPS NEO-6MV2, MPU6050, ESP32C3,...  
+
+CHỨC NĂNG CHÍNH:  
+
 TÌM XE TRONG BÃI  
 
 CẢNH BÁO KHI CÓ TRỘM  
